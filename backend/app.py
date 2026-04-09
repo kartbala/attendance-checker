@@ -11,7 +11,7 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
-DB_PATH = Path(__file__).parent / "data" / "checker.db"
+DB_PATH = Path(os.environ.get("DB_PATH", Path(__file__).parent / "data" / "checker.db"))
 SYNC_API_KEY = os.environ.get("SYNC_API_KEY", "dev-key")
 
 SCHEMA = """
