@@ -1,4 +1,7 @@
-venv/
-data/
 __pycache__/
 *.pyc
+venv/
+backend/data/checker.db
+node_modules/
+frontend/dist/
+.env
