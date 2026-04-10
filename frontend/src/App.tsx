@@ -9,18 +9,22 @@ type Screen = 'register' | 'attendance';
 function App() {
   const [screen, setScreen] = useState<Screen>('register');
   const [email, setEmail] = useState('');
+  const [courseCode, setCourseCode] = useState<string | undefined>();
 
   const handleRegistered = (registeredEmail: string) => {
     setEmail(registeredEmail);
+    setCourseCode(undefined);
     setScreen('attendance');
   };
 
   const handleLookup = (lookupEmail: string) => {
     setEmail(lookupEmail);
+    setCourseCode(undefined);
     setScreen('attendance');
   };
 
   const handleBack = () => {
+    setCourseCode(undefined);
     setScreen('register');
   };
 
@@ -36,6 +40,8 @@ function App() {
       {screen === 'attendance' && (
         <AttendanceView
           email={email}
+          courseCode={courseCode}
+          onCourseSelect={setCourseCode}
           apiUrl={API_URL}
           onBack={handleBack}
         />

@@ -17,14 +17,15 @@ SYNC_API_KEY = os.environ.get("SYNC_API_KEY", "dev-key")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS student (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT UNIQUE NOT NULL,
+    email TEXT NOT NULL,
     first_name TEXT,
     last_name TEXT,
     course_code TEXT,
     course_name TEXT,
     barcode_id TEXT,
     physical_barcode_id TEXT,
-    huid TEXT
+    huid TEXT,
+    UNIQUE(email, course_code)
 );
 
 CREATE TABLE IF NOT EXISTS attendance (
@@ -68,6 +69,12 @@ def close_db(exception):
 def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
+    # Check if we need to migrate from UNIQUE(email) to UNIQUE(email, course_code)
+    old_schema = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='student'"
+    ).fetchone()
+    if old_schema and "UNIQUE(email, course_code)" not in (old_schema[0] or ""):
+        conn.execute("DROP TABLE IF EXISTS student")
     conn.executescript(SCHEMA)
     # Migration for existing DBs
     try:
@@ -128,12 +135,12 @@ def register():
         return jsonify({"error": "Validation failed", "details": errors}), 400
 
     db = get_db()
-    student = db.execute(
+    students = db.execute(
         "SELECT id, first_name, last_name, course_code, course_name FROM student WHERE email = ?",
         (email,),
-    ).fetchone()
+    ).fetchall()
 
-    if not student:
+    if not students:
         return jsonify({
             "error": "Email not found -- are you enrolled in Dr. B's class?"
         }), 404
@@ -144,34 +151,49 @@ def register():
     )
     db.commit()
 
+    courses = [{"course_code": s["course_code"], "course_name": s["course_name"]} for s in students]
     return jsonify({
         "success": True,
-        "student_name": f"{student['first_name']} {student['last_name']}",
-        "course_code": student["course_code"],
-        "course_name": student["course_name"],
+        "student_name": f"{students[0]['first_name']} {students[0]['last_name']}",
+        "courses": courses,
     })
 
 
 @app.route("/attendance")
 def attendance():
     email = (request.args.get("email") or "").strip().lower()
+    course_code_param = (request.args.get("course_code") or "").strip()
     if not email:
         return jsonify({"error": "email parameter required"}), 400
 
     db = get_db()
-    student = db.execute(
+    students = db.execute(
         "SELECT first_name, last_name, course_code, course_name, barcode_id, physical_barcode_id FROM student WHERE email = ?",
         (email,),
-    ).fetchone()
+    ).fetchall()
 
-    if not student:
+    if not students:
         return jsonify({"error": "Email not found"}), 404
 
-    if not student["barcode_id"]:
+    if not students[0]["barcode_id"]:
         return jsonify({
             "error": "not_registered",
             "message": "You need to register your barcode first.",
         }), 400
+
+    # If multiple courses and no course_code specified, return course list
+    if len(students) > 1 and not course_code_param:
+        return jsonify({
+            "multiple_courses": True,
+            "student_name": f"{students[0]['first_name']} {students[0]['last_name']}",
+            "courses": [{"course_code": s["course_code"], "course_name": s["course_name"]} for s in students],
+        })
+
+    student = students[0]
+    if course_code_param:
+        match = [s for s in students if s["course_code"] == course_code_param]
+        if match:
+            student = match[0]
 
     course_code = student["course_code"]
     barcode_id = student["barcode_id"]
@@ -254,9 +276,9 @@ def sync_push():
         db.execute("""
             INSERT INTO student (email, first_name, last_name, course_code, course_name, barcode_id, physical_barcode_id, huid)
             VALUES (:email, :first_name, :last_name, :course_code, :course_name, :barcode_id, :physical_barcode_id, :huid)
-            ON CONFLICT(email) DO UPDATE SET
+            ON CONFLICT(email, course_code) DO UPDATE SET
                 first_name=excluded.first_name, last_name=excluded.last_name,
-                course_code=excluded.course_code, course_name=excluded.course_name,
+                course_name=excluded.course_name,
                 barcode_id=COALESCE(student.barcode_id, excluded.barcode_id),
                 physical_barcode_id=COALESCE(student.physical_barcode_id, excluded.physical_barcode_id),
                 huid=COALESCE(student.huid, excluded.huid)

@@ -17,8 +17,15 @@ interface AttendanceData {
   dates: DateEntry[];
 }
 
+interface CourseOption {
+  course_code: string;
+  course_name: string;
+}
+
 interface AttendanceViewProps {
   email: string;
+  courseCode?: string;
+  onCourseSelect: (code: string) => void;
   apiUrl: string;
   onBack: () => void;
 }
@@ -29,19 +36,33 @@ const STATUS_STYLES = {
   absent: { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-300', label: 'Absent' },
 };
 
-export function AttendanceView({ email, apiUrl, onBack }: AttendanceViewProps) {
+export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBack }: AttendanceViewProps) {
   const [data, setData] = useState<AttendanceData | null>(null);
+  const [courses, setCourses] = useState<CourseOption[] | null>(null);
+  const [studentName, setStudentName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchAttendance = async () => {
+      setLoading(true);
+      setData(null);
+      setCourses(null);
+      setError(null);
       try {
-        const resp = await fetch(`${apiUrl}/attendance?email=${encodeURIComponent(email)}`);
+        let url = `${apiUrl}/attendance?email=${encodeURIComponent(email)}`;
+        if (courseCode) url += `&course_code=${encodeURIComponent(courseCode)}`;
+        const resp = await fetch(url);
         const json = await resp.json();
 
         if (!resp.ok) {
           setError(json.message || json.error);
+          return;
+        }
+
+        if (json.multiple_courses) {
+          setCourses(json.courses);
+          setStudentName(json.student_name);
           return;
         }
 
@@ -54,7 +75,7 @@ export function AttendanceView({ email, apiUrl, onBack }: AttendanceViewProps) {
     };
 
     fetchAttendance();
-  }, [email, apiUrl]);
+  }, [email, courseCode, apiUrl]);
 
   if (loading) {
     return (
@@ -76,6 +97,35 @@ export function AttendanceView({ email, apiUrl, onBack }: AttendanceViewProps) {
         >
           &larr; Back
         </button>
+      </div>
+    );
+  }
+
+  if (courses) {
+    return (
+      <div className="w-full max-w-md mx-auto space-y-4">
+        <button
+          onClick={onBack}
+          className="text-blue-600 hover:text-blue-800 text-lg font-medium"
+        >
+          &larr; Back
+        </button>
+        <div className="text-center">
+          <h1 className="text-3xl font-bold text-gray-900">{studentName}</h1>
+          <p className="mt-2 text-lg text-gray-600">Which class?</p>
+        </div>
+        <div className="space-y-3">
+          {courses.map((c) => (
+            <button
+              key={c.course_code}
+              onClick={() => onCourseSelect(c.course_code)}
+              className="w-full bg-white rounded-2xl shadow-lg p-6 text-left hover:bg-blue-50 transition-all"
+            >
+              <p className="text-xl font-semibold text-gray-900">{c.course_name}</p>
+              <p className="text-base text-gray-500">{c.course_code}</p>
+            </button>
+          ))}
+        </div>
       </div>
     );
   }
