@@ -14,6 +14,8 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
   const [email, setEmail] = useState('');
   const [huid, setHuid] = useState('');
   const [barcodeId, setBarcodeId] = useState('');
+  const [physicalBarcodeId, setPhysicalBarcodeId] = useState('');
+  const [showPhysicalScan, setShowPhysicalScan] = useState(false);
   const [scanMode, setScanMode] = useState<ScanMode>('camera');
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,11 +23,17 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
   const [lookupEmail, setLookupEmail] = useState('');
   const scannerRef = useRef<Html5Qrcode | null>(null);
 
+  const [scanTarget, setScanTarget] = useState<'virtual' | 'physical'>('virtual');
+
   const handleBarcodeScan = useCallback((barcode: string) => {
-    setBarcodeId(barcode.trim());
+    if (scanTarget === 'physical') {
+      setPhysicalBarcodeId(barcode.trim());
+    } else {
+      setBarcodeId(barcode.trim());
+    }
     setIsCameraActive(false);
     if (navigator.vibrate) navigator.vibrate(200);
-  }, []);
+  }, [scanTarget]);
 
   // USB scanner -- only active when not focused on an input
   useUsbScanner({
@@ -100,6 +108,7 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
           email: email.trim().toLowerCase(),
           huid: huid.trim(),
           barcode_id: barcodeId.trim(),
+          physical_barcode_id: physicalBarcodeId.trim() || undefined,
         }),
       });
 
@@ -175,7 +184,7 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
               <span className="text-lg font-mono text-green-800">{barcodeId}</span>
               <button
                 type="button"
-                onClick={() => setBarcodeId('')}
+                onClick={() => { setBarcodeId(''); setScanTarget('virtual'); }}
                 className="text-green-600 hover:text-green-800 text-sm font-medium"
               >
                 Rescan
@@ -241,6 +250,55 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
             </div>
           )}
         </div>
+
+        {/* Optional physical card scan */}
+        {barcodeId && !showPhysicalScan && (
+          <button
+            type="button"
+            onClick={() => { setShowPhysicalScan(true); setScanTarget('physical'); }}
+            className="w-full text-sm text-gray-500 hover:text-blue-600 py-2"
+          >
+            + Add physical Bison card (optional -- only if you've used one in class)
+          </button>
+        )}
+
+        {showPhysicalScan && (
+          <div>
+            <label className="block text-base font-medium text-gray-700 mb-1">
+              Physical Card Barcode (optional)
+            </label>
+            {physicalBarcodeId ? (
+              <div className="flex items-center justify-between bg-green-50 border-2 border-green-300 rounded-xl px-4 py-3">
+                <span className="text-lg font-mono text-green-800">{physicalBarcodeId}</span>
+                <button
+                  type="button"
+                  onClick={() => { setPhysicalBarcodeId(''); setScanTarget('physical'); }}
+                  className="text-green-600 hover:text-green-800 text-sm font-medium"
+                >
+                  Rescan
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-sm text-gray-500">Scan the barcode on your physical Bison card</p>
+                <button
+                  type="button"
+                  onClick={() => { setScanTarget('physical'); setIsCameraActive(true); }}
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-all"
+                >
+                  Scan Physical Card
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowPhysicalScan(false); setScanTarget('virtual'); }}
+                  className="w-full text-sm text-gray-500 hover:text-gray-700 py-1"
+                >
+                  Skip
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-50 border-2 border-red-300 text-red-800 px-4 py-3 rounded-xl text-base">

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS student (
     course_code TEXT,
     course_name TEXT,
     barcode_id TEXT,
+    physical_barcode_id TEXT,
     huid TEXT
 );
 
@@ -68,6 +69,12 @@ def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.executescript(SCHEMA)
+    # Migration for existing DBs
+    try:
+        conn.execute("ALTER TABLE student ADD COLUMN physical_barcode_id TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    conn.commit()
     conn.close()
 
 
@@ -106,6 +113,7 @@ def register():
     email = (data.get("email") or "").strip().lower()
     huid = (data.get("huid") or "").strip()
     barcode_id = (data.get("barcode_id") or "").strip()
+    physical_barcode_id = (data.get("physical_barcode_id") or "").strip()
 
     errors = []
     if not EMAIL_RE.match(email):
@@ -114,6 +122,8 @@ def register():
         errors.append("HUID must be @ followed by 8 digits (e.g. @03107801)")
     if not BARCODE_RE.match(barcode_id):
         errors.append("Barcode must be numeric")
+    if physical_barcode_id and not BARCODE_RE.match(physical_barcode_id):
+        errors.append("Physical card barcode must be numeric")
     if errors:
         return jsonify({"error": "Validation failed", "details": errors}), 400
 
@@ -129,8 +139,8 @@ def register():
         }), 404
 
     db.execute(
-        "UPDATE student SET barcode_id = ?, huid = ? WHERE email = ?",
-        (barcode_id, huid, email),
+        "UPDATE student SET barcode_id = ?, physical_barcode_id = ?, huid = ? WHERE email = ?",
+        (barcode_id, physical_barcode_id or None, huid, email),
     )
     db.commit()
 
@@ -150,7 +160,7 @@ def attendance():
 
     db = get_db()
     student = db.execute(
-        "SELECT first_name, last_name, course_code, course_name, barcode_id FROM student WHERE email = ?",
+        "SELECT first_name, last_name, course_code, course_name, barcode_id, physical_barcode_id FROM student WHERE email = ?",
         (email,),
     ).fetchone()
 
@@ -165,6 +175,7 @@ def attendance():
 
     course_code = student["course_code"]
     barcode_id = student["barcode_id"]
+    physical_barcode_id = student["physical_barcode_id"]
 
     # Only count dates where 5+ students were scanned as real class sessions
     # (filters out test scans and scanner errors)
@@ -175,9 +186,14 @@ def attendance():
     all_dates = [row["scan_date"] for row in all_sessions]
     total_sessions = len(all_dates)
 
+    # Check both virtual and physical card barcodes
+    barcodes = [barcode_id]
+    if physical_barcode_id:
+        barcodes.append(physical_barcode_id)
+    placeholders = ",".join("?" * len(barcodes))
     attended_rows = db.execute(
-        "SELECT DISTINCT scan_date FROM attendance WHERE student_id = ? AND course_code = ?",
-        (barcode_id, course_code),
+        f"SELECT DISTINCT scan_date FROM attendance WHERE student_id IN ({placeholders}) AND course_code = ?",
+        barcodes + [course_code],
     ).fetchall()
     attended_dates = {row["scan_date"] for row in attended_rows}
 
@@ -234,13 +250,15 @@ def sync_push():
     counts = {"students": 0, "attendance": 0, "excused": 0}
 
     for s in data.get("students", []):
+        s.setdefault("physical_barcode_id", None)
         db.execute("""
-            INSERT INTO student (email, first_name, last_name, course_code, course_name, barcode_id, huid)
-            VALUES (:email, :first_name, :last_name, :course_code, :course_name, :barcode_id, :huid)
+            INSERT INTO student (email, first_name, last_name, course_code, course_name, barcode_id, physical_barcode_id, huid)
+            VALUES (:email, :first_name, :last_name, :course_code, :course_name, :barcode_id, :physical_barcode_id, :huid)
             ON CONFLICT(email) DO UPDATE SET
                 first_name=excluded.first_name, last_name=excluded.last_name,
                 course_code=excluded.course_code, course_name=excluded.course_name,
                 barcode_id=COALESCE(student.barcode_id, excluded.barcode_id),
+                physical_barcode_id=COALESCE(student.physical_barcode_id, excluded.physical_barcode_id),
                 huid=COALESCE(student.huid, excluded.huid)
         """, s)
         counts["students"] += 1
@@ -273,12 +291,12 @@ def sync_pull():
 
     db = get_db()
     rows = db.execute(
-        "SELECT email, barcode_id, huid FROM student WHERE barcode_id IS NOT NULL AND barcode_id != ''"
+        "SELECT email, barcode_id, physical_barcode_id, huid FROM student WHERE barcode_id IS NOT NULL AND barcode_id != ''"
     ).fetchall()
 
     return jsonify({
         "registrations": [
-            {"email": r["email"], "barcode_id": r["barcode_id"], "huid": r["huid"]}
+            {"email": r["email"], "barcode_id": r["barcode_id"], "physical_barcode_id": r["physical_barcode_id"], "huid": r["huid"]}
             for r in rows
         ]
     })
