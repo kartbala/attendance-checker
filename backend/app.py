@@ -166,8 +166,10 @@ def attendance():
     course_code = student["course_code"]
     barcode_id = student["barcode_id"]
 
+    # Only count dates where 5+ students were scanned as real class sessions
+    # (filters out test scans and scanner errors)
     all_sessions = db.execute(
-        "SELECT DISTINCT scan_date FROM attendance WHERE course_code = ? ORDER BY scan_date",
+        "SELECT scan_date, COUNT(DISTINCT student_id) as cnt FROM attendance WHERE course_code = ? GROUP BY scan_date HAVING cnt >= 5 ORDER BY scan_date",
         (course_code,),
     ).fetchall()
     all_dates = [row["scan_date"] for row in all_sessions]
@@ -187,16 +189,16 @@ def attendance():
 
     dates = []
     for d in all_dates:
-        if d in attended_dates:
-            status = "present"
-        elif d in excused_map:
+        if d in excused_map:
             status = "excused"
+        elif d in attended_dates:
+            status = "present"
         else:
             status = "absent"
         dates.append({"date": d, "status": status})
 
-    sessions_attended = len(attended_dates & set(all_dates))
     excused_count = len(set(excused_map.keys()) & set(all_dates))
+    sessions_attended = len(attended_dates & set(all_dates)) - excused_count
     unexcused_count = total_sessions - sessions_attended - excused_count
 
     effective_rate = (
