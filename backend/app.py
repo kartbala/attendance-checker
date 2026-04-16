@@ -412,8 +412,10 @@ def sync_push():
 
     for a in data.get("attendance", []):
         db.execute("""
-            INSERT OR IGNORE INTO attendance (student_id, course_code, scan_date, scan_timestamp)
+            INSERT INTO attendance (student_id, course_code, scan_date, scan_timestamp)
             VALUES (:student_id, :course_code, :scan_date, :scan_timestamp)
+            ON CONFLICT(student_id, course_code, scan_date) DO UPDATE SET
+                scan_timestamp=excluded.scan_timestamp
         """, a)
         counts["attendance"] += 1
 
