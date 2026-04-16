@@ -3,10 +3,29 @@
 import os
 import re
 import sqlite3
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from flask import Flask, g, jsonify, request
 from flask_cors import CORS
+
+ET = ZoneInfo("America/New_York")
+
+
+def format_scan_time_et(ts: str) -> str:
+    """Render a UTC scan_timestamp as human-readable Eastern time.
+    Input: '2026-02-03T19:11:32Z' or '2026-02-03T19:11:32.000Z'.
+    Output: 'Tue Feb 3, 2:11 PM ET'."""
+    if not ts:
+        return ""
+    s = ts.replace("Z", "+00:00").replace(".000+00:00", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+        local = dt.astimezone(ET)
+        return local.strftime("%a %b %-d, %-I:%M %p ET")
+    except ValueError:
+        return ts
 
 app = Flask(__name__)
 CORS(app)
@@ -354,7 +373,7 @@ def debug_view():
             else:
                 status, cls = "absent", "absent"
                 absent += 1
-            stamp_str = "<br>".join(t[:19] for t in stamps) if stamps else "&mdash;"
+            stamp_str = "<br>".join(format_scan_time_et(t) for t in stamps) if stamps else "&mdash;"
             excuse_str = ""
             if d in excused:
                 t, r = excused[d]
