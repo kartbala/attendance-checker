@@ -3,27 +3,27 @@
 import os
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from flask import Flask, g, jsonify, request
 from flask_cors import CORS
 
-ET = ZoneInfo("America/New_York")
-
 
 def format_scan_time_et(ts: str) -> str:
-    """Render a UTC scan_timestamp as human-readable Eastern time.
-    Input: '2026-02-03T19:11:32Z' or '2026-02-03T19:11:32.000Z'.
-    Output: 'Tue Feb 3, 2:11 PM ET'."""
+    """Render a scan_timestamp as human-readable Eastern wall-clock time.
+    The upstream Apps Script encodes ET-local times with a fixed EST (UTC-5)
+    offset regardless of date -- so a scan at 12:40 PM EDT is stored as
+    '17:40Z' (the EST equivalent). Subtract 5 hours and render naive so the
+    wall-clock time is correct on both sides of the DST boundary.
+    Input: '2026-02-03T19:11:32Z'. Output: 'Tue Feb 3, 2:11 PM ET'."""
     if not ts:
         return ""
     s = ts.replace("Z", "+00:00").replace(".000+00:00", "+00:00")
     try:
-        dt = datetime.fromisoformat(s)
-        local = dt.astimezone(ET)
-        return local.strftime("%a %b %-d, %-I:%M %p ET")
+        dt = datetime.fromisoformat(s).replace(tzinfo=None)
+        wall = dt - timedelta(hours=5)
+        return wall.strftime("%a %b %-d, %-I:%M %p ET")
     except ValueError:
         return ts
 
