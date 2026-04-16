@@ -258,6 +258,131 @@ def attendance():
     })
 
 
+@app.route("/debug")
+def debug_view():
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return (
+            "<p style='font-family:system-ui;font-size:18px;padding:2rem'>"
+            "Add <code>?email=you@bison.howard.edu</code> to the URL.</p>"
+        ), 400
+
+    db = get_db()
+    students = db.execute(
+        "SELECT first_name, last_name, course_code, course_name, barcode_id, "
+        "physical_barcode_id, huid FROM student WHERE email = ? ORDER BY course_code",
+        (email,),
+    ).fetchall()
+    if not students:
+        return f"<p style='font-family:system-ui;font-size:18px;padding:2rem'>Email <b>{email}</b> not found.</p>", 404
+
+    name = f"{students[0]['first_name']} {students[0]['last_name']}"
+
+    out = [
+        "<!doctype html><html><head><meta charset='utf-8'><title>Debug -- ", name, "</title>",
+        "<style>",
+        "body{font-family:system-ui,sans-serif;font-size:18px;max-width:1100px;margin:2rem auto;padding:0 1rem;line-height:1.5}",
+        "h1{font-size:28px;margin-bottom:0.25rem} h2{font-size:22px;margin-top:2rem;border-bottom:2px solid #ccc;padding-bottom:0.25rem}",
+        "table{border-collapse:collapse;width:100%;margin-top:0.5rem;font-size:16px}",
+        "th,td{padding:0.4rem 0.6rem;border-bottom:1px solid #ddd;text-align:left}",
+        "th{background:#f3f3f3;font-weight:600}",
+        ".present{color:#0a7a0a;font-weight:600} .excused{color:#0066cc;font-weight:600} .absent{color:#b00020;font-weight:600}",
+        ".meta{color:#555;font-size:16px} code{background:#f3f3f3;padding:0.1rem 0.3rem;border-radius:3px}",
+        ".summary{background:#fafafa;padding:0.6rem 1rem;border-left:4px solid #333;margin-top:0.5rem}",
+        "</style></head><body>",
+        f"<h1>{name}</h1>",
+        f"<p class='meta'>{email} &middot; HUID: <code>{students[0]['huid'] or '(none)'}</code> &middot; "
+        f"Virtual barcode: <code>{students[0]['barcode_id'] or '(none)'}</code>"
+        + (f" &middot; Physical barcode: <code>{students[0]['physical_barcode_id']}</code>" if students[0]['physical_barcode_id'] else "")
+        + "</p>",
+    ]
+
+    for s in students:
+        course = s["course_code"]
+        bcs = [b for b in (s["barcode_id"], s["physical_barcode_id"]) if b]
+
+        sessions = db.execute(
+            "SELECT scan_date, COUNT(DISTINCT student_id) AS n FROM attendance "
+            "WHERE course_code = ? GROUP BY scan_date HAVING n >= 5 ORDER BY scan_date",
+            (course,),
+        ).fetchall()
+        enrolled = db.execute(
+            "SELECT COUNT(*) FROM student WHERE course_code = ?", (course,)
+        ).fetchone()[0]
+        excused = {
+            r["absence_date"]: (r["absence_type"] or "", r["reason"] or "")
+            for r in db.execute(
+                "SELECT absence_date, absence_type, reason FROM excused_absence "
+                "WHERE student_email = ? AND course_code = ?",
+                (email, course),
+            ).fetchall()
+        }
+
+        out.append(f"<h2>{course} &mdash; {s['course_name']}</h2>")
+        out.append(
+            f"<p class='meta'>Enrolled: <b>{enrolled}</b>"
+            f" &middot; Sessions recorded: <b>{len(sessions)}</b>"
+            f" &middot; Your barcodes: <code>{', '.join(bcs) if bcs else 'NOT REGISTERED'}</code></p>"
+        )
+        out.append(
+            "<table><thead><tr><th>Date</th><th>Status</th><th>Class size</th>"
+            "<th>% of class</th><th>Your scan times</th><th>Excuse</th></tr></thead><tbody>"
+        )
+
+        present = excused_n = absent = 0
+        for row in sessions:
+            d = row["scan_date"]
+            n = row["n"]
+            pct = f"{100*n/enrolled:.0f}%" if enrolled else "-"
+            stamps = []
+            if bcs:
+                placeholders = ",".join("?" * len(bcs))
+                stamps = [
+                    r[0]
+                    for r in db.execute(
+                        f"SELECT scan_timestamp FROM attendance WHERE student_id IN ({placeholders}) "
+                        f"AND course_code = ? AND scan_date = ? ORDER BY scan_timestamp",
+                        bcs + [course, d],
+                    ).fetchall()
+                ]
+            if d in excused:
+                status, cls = "excused", "excused"
+                excused_n += 1
+            elif stamps:
+                status, cls = "present", "present"
+                present += 1
+            else:
+                status, cls = "absent", "absent"
+                absent += 1
+            stamp_str = "<br>".join(t[:19] for t in stamps) if stamps else "&mdash;"
+            excuse_str = ""
+            if d in excused:
+                t, r = excused[d]
+                excuse_str = f"{t}: {r}" if t else r
+            out.append(
+                f"<tr><td>{d}</td><td class='{cls}'>{status}</td>"
+                f"<td>{n}/{enrolled}</td><td>{pct}</td>"
+                f"<td>{stamp_str}</td><td>{excuse_str}</td></tr>"
+            )
+
+        total = len(sessions)
+        rate = (present + excused_n) / total * 100 if total else 100.0
+        out.append("</tbody></table>")
+        out.append(
+            f"<div class='summary'>Present: <b>{present}</b> &middot; "
+            f"Excused: <b>{excused_n}</b> &middot; Absent: <b>{absent}</b> / {total} sessions "
+            f"&middot; Effective rate: <b>{rate:.1f}%</b></div>"
+        )
+
+    out.append(
+        "<p class='meta' style='margin-top:2rem'>Note: scan timestamps from the scanner "
+        "are currently recorded as midnight UTC for the session date &mdash; individual scan "
+        "instants are not captured by the upstream Google Sheets API.</p>"
+    )
+    out.append("</body></html>")
+    return "".join(out)
+
+
 @app.route("/sync/push", methods=["POST"])
 def sync_push():
     auth_err = require_sync_key()

@@ -2,12 +2,15 @@ services:
   - type: web
     name: attendance-checker
     runtime: python
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: SYNC_API_KEY
         generateValue: true
+      - key: DB_PATH
+        value: /var/data/checker.db
     disk:
       name: checker-data
-      mountPath: /opt/render/project/src/data
+      mountPath: /var/data
       sizeGB: 1
