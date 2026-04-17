@@ -33,6 +33,19 @@ CORS(app)
 DB_PATH = Path(os.environ.get("DB_PATH", Path(__file__).parent / "data" / "checker.db"))
 SYNC_API_KEY = os.environ.get("SYNC_API_KEY", "dev-key")
 
+
+def normalize_barcode(barcode):
+    """Strip leading zeros so '07142851387095' and '7142851387095' match.
+
+    USB/UPC scanners inconsistently include or drop leading zeros for the
+    same physical card. Canonicalize to the stripped form everywhere so
+    registered barcodes match scan rows. Idempotent. Preserves None/''
+    as-is; '000' collapses to '0' so an all-zero code stays non-empty."""
+    if not barcode:
+        return barcode
+    stripped = barcode.lstrip("0")
+    return stripped or "0"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS student (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,8 +113,43 @@ def init_db():
         conn.execute("ALTER TABLE student ADD COLUMN physical_barcode_id TEXT")
     except sqlite3.OperationalError:
         pass  # column already exists
+    _migrate_normalize_barcodes(conn)
     conn.commit()
     conn.close()
+
+
+def _migrate_normalize_barcodes(conn):
+    """Strip leading zeros from stored barcodes so registrations match scans.
+
+    Idempotent. Run on every init_db(); a no-op once all rows are already
+    normalized. On attendance, a pair like ('07X', '7X') for the same
+    (course, date) would violate UNIQUE on migrate -- drop the leading-zero
+    duplicate first, then normalize the survivor."""
+    conn.execute(
+        "UPDATE student SET barcode_id = LTRIM(barcode_id, '0') "
+        "WHERE barcode_id IS NOT NULL AND barcode_id LIKE '0%' "
+        "AND LTRIM(barcode_id, '0') != ''"
+    )
+    conn.execute(
+        "UPDATE student SET physical_barcode_id = LTRIM(physical_barcode_id, '0') "
+        "WHERE physical_barcode_id IS NOT NULL AND physical_barcode_id LIKE '0%' "
+        "AND LTRIM(physical_barcode_id, '0') != ''"
+    )
+    conn.execute("""
+        DELETE FROM attendance
+        WHERE student_id LIKE '0%'
+          AND LTRIM(student_id, '0') != ''
+          AND EXISTS (
+              SELECT 1 FROM attendance a2
+              WHERE a2.student_id = LTRIM(attendance.student_id, '0')
+                AND a2.course_code = attendance.course_code
+                AND a2.scan_date = attendance.scan_date
+          )
+    """)
+    conn.execute(
+        "UPDATE attendance SET student_id = LTRIM(student_id, '0') "
+        "WHERE student_id LIKE '0%' AND LTRIM(student_id, '0') != ''"
+    )
 
 
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+-]+@bison\.howard\.edu$")
@@ -152,6 +200,9 @@ def register():
         errors.append("Physical card barcode must be numeric")
     if errors:
         return jsonify({"error": "Validation failed", "details": errors}), 400
+
+    barcode_id = normalize_barcode(barcode_id)
+    physical_barcode_id = normalize_barcode(physical_barcode_id) if physical_barcode_id else ""
 
     db = get_db()
     students = db.execute(
@@ -232,10 +283,9 @@ def attendance():
         "SELECT COUNT(*) FROM student WHERE course_code = ?", (course_code,)
     ).fetchone()[0]
 
-    # Check both virtual and physical card barcodes
-    barcodes = [barcode_id]
-    if physical_barcode_id:
-        barcodes.append(physical_barcode_id)
+    # Check both virtual and physical card barcodes; normalize to match
+    # stored scans (see normalize_barcode — scanners drop leading zeros).
+    barcodes = list({normalize_barcode(b) for b in (barcode_id, physical_barcode_id) if b})
     placeholders = ",".join("?" * len(barcodes))
     attended_rows = db.execute(
         f"SELECT scan_date, MIN(scan_timestamp) AS first_ts FROM attendance "
@@ -339,7 +389,7 @@ def debug_view():
 
     for s in students:
         course = s["course_code"]
-        bcs = [b for b in (s["barcode_id"], s["physical_barcode_id"]) if b]
+        bcs = list({normalize_barcode(b) for b in (s["barcode_id"], s["physical_barcode_id"]) if b})
 
         sessions = db.execute(
             "SELECT scan_date, COUNT(DISTINCT student_id) AS n FROM attendance "
@@ -433,6 +483,8 @@ def sync_push():
 
     for s in data.get("students", []):
         s.setdefault("physical_barcode_id", None)
+        s["barcode_id"] = normalize_barcode(s.get("barcode_id"))
+        s["physical_barcode_id"] = normalize_barcode(s.get("physical_barcode_id"))
         db.execute("""
             INSERT INTO student (email, first_name, last_name, course_code, course_name, barcode_id, physical_barcode_id, huid)
             VALUES (:email, :first_name, :last_name, :course_code, :course_name, :barcode_id, :physical_barcode_id, :huid)
@@ -446,6 +498,7 @@ def sync_push():
         counts["students"] += 1
 
     for a in data.get("attendance", []):
+        a["student_id"] = normalize_barcode(a.get("student_id"))
         db.execute("""
             INSERT INTO attendance (student_id, course_code, scan_date, scan_timestamp)
             VALUES (:student_id, :course_code, :scan_date, :scan_timestamp)
