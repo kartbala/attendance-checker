@@ -37,9 +37,23 @@ interface AttendanceViewProps {
 }
 
 const STATUS_STYLES = {
-  present: { bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-300', label: 'Present', dot: 'bg-green-500' },
-  excused: { bg: 'bg-yellow-100', text: 'text-yellow-800', border: 'border-yellow-300', label: 'Excused', dot: 'bg-yellow-400' },
-  absent:  { bg: 'bg-red-100',    text: 'text-red-800',    border: 'border-red-300',    label: 'Absent',  dot: 'bg-red-500' },
+  present: { bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-300', label: 'Present', dot: 'bg-green-500', fill: '#22c55e' },
+  excused: { bg: 'bg-yellow-100', text: 'text-yellow-800', border: 'border-yellow-300', label: 'Excused', dot: 'bg-yellow-400', fill: '#facc15' },
+  absent:  { bg: 'bg-red-100',    text: 'text-red-800',    border: 'border-red-300',    label: 'Absent',  dot: 'bg-red-500',   fill: '#ef4444' },
+};
+
+// Authoritative enrollment (source: memory project_attendance_checker.md,
+// pulled 2026-04-15). student table contains drops -- override to roster.
+const ENROLLED_OVERRIDE: Record<string, number> = {
+  'INFO-335-04': 39,
+  'INFO-311-05': 40,
+};
+
+// Class start time in minutes past midnight (ET). Used to draw the
+// "class started" reference line on the arrival-times chart.
+const CLASS_START_MINUTES: Record<string, number> = {
+  'INFO-335-04': 12 * 60 + 40, // POM: 12:40 PM
+  'INFO-311-05': 14 * 60 + 10, // QBA: 2:10 PM
 };
 
 function fmtDate(iso: string) {
@@ -90,32 +104,46 @@ function SessionTimeline({ dates }: { dates: DateEntry[] }) {
 function ClassParticipationChart({ dates, enrolled }: { dates: DateEntry[]; enrolled: number }) {
   if (!dates.length || !enrolled) return null;
   const maxCnt = Math.max(enrolled, ...dates.map((d) => d.class_scan_count));
+  const W = 320, H = 110, PAD_L = 8, PAD_R = 8, PAD_T = 6, PAD_B = 18;
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+  const gap = 2;
+  const barW = Math.max(3, (plotW - gap * (dates.length - 1)) / dates.length);
+  const yEnrolled = PAD_T + plotH - (enrolled / maxCnt) * plotH;
+
   return (
     <div>
-      <div className="flex items-end gap-1 h-24 border-b border-gray-200">
-        {dates.map((d) => {
-          const h = (d.class_scan_count / maxCnt) * 100;
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 'auto' }}>
+        {/* Enrolled reference line */}
+        <line x1={PAD_L} y1={yEnrolled} x2={W - PAD_R} y2={yEnrolled}
+              stroke="#9ca3af" strokeDasharray="3 3" strokeWidth="1" />
+        <text x={W - PAD_R} y={yEnrolled - 3} fontSize="9" fill="#6b7280" textAnchor="end">
+          {enrolled} enrolled
+        </text>
+        {dates.map((d, i) => {
+          const h = (d.class_scan_count / maxCnt) * plotH;
+          const x = PAD_L + i * (barW + gap);
+          const y = PAD_T + plotH - h;
           const s = STATUS_STYLES[d.status];
           return (
-            <div key={d.date} className="flex-1 group relative flex items-end min-w-[8px]">
-              <div className={`w-full ${s.dot} rounded-t opacity-80 hover:opacity-100`}
-                   style={{ height: `${h}%` }} />
-              <div className="pointer-events-none absolute z-10 -top-12 left-1/2 -translate-x-1/2 whitespace-nowrap bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-                {fmtDate(d.date)}: {d.class_scan_count}/{enrolled} scanned
-              </div>
-            </div>
+            <g key={d.date}>
+              <rect x={x} y={y} width={barW} height={h} fill={s.fill} opacity="0.85" rx="1.5" />
+              <title>{fmtDate(d.date)}: {d.class_scan_count}/{enrolled} scanned ({s.label})</title>
+            </g>
           );
         })}
-      </div>
-      <div className="flex justify-between text-xs text-gray-500 mt-1">
-        <span>{fmtDate(dates[0].date)}</span>
-        <span>{fmtDate(dates[dates.length - 1].date)}</span>
-      </div>
+        {/* X axis baseline */}
+        <line x1={PAD_L} y1={H - PAD_B} x2={W - PAD_R} y2={H - PAD_B} stroke="#e5e7eb" />
+        <text x={PAD_L} y={H - 4} fontSize="9" fill="#6b7280">{fmtDate(dates[0].date)}</text>
+        <text x={W - PAD_R} y={H - 4} fontSize="9" fill="#6b7280" textAnchor="end">
+          {fmtDate(dates[dates.length - 1].date)}
+        </text>
+      </svg>
     </div>
   );
 }
 
-function ArrivalTimesChart({ dates }: { dates: DateEntry[] }) {
+function ArrivalTimesChart({ dates, classStart }: { dates: DateEntry[]; classStart?: number }) {
   const presentDates = dates.filter((d) => d.first_scan_time);
   if (presentDates.length < 2) return null;
 
@@ -131,17 +159,19 @@ function ArrivalTimesChart({ dates }: { dates: DateEntry[] }) {
   }).filter(Boolean) as { date: string; minutes: number }[];
 
   if (times.length < 2) return null;
-  const minT = Math.min(...times.map(t => t.minutes)) - 5;
-  const maxT = Math.max(...times.map(t => t.minutes)) + 5;
-  const range = maxT - minT;
+  const allY = times.map(t => t.minutes);
+  if (classStart !== undefined) allY.push(classStart);
+  const minT = Math.min(...allY) - 2;
+  const maxT = Math.max(...allY) + 2;
+  const range = Math.max(1, maxT - minT);
 
-  const W = 320, H = 100, PAD = 20;
-  const xStep = (W - 2 * PAD) / Math.max(1, times.length - 1);
-  const points = times.map((t, i) => {
-    const x = PAD + i * xStep;
-    const y = H - PAD - ((t.minutes - minT) / range) * (H - 2 * PAD);
-    return { x, y, t };
-  });
+  const W = 320, H = 140, PAD_L = 48, PAD_R = 8, PAD_T = 10, PAD_B = 18;
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+  const xStep = plotW / Math.max(1, times.length - 1);
+  const yFor = (m: number) => PAD_T + plotH - ((m - minT) / range) * plotH;
+
+  const points = times.map((t, i) => ({ x: PAD_L + i * xStep, y: yFor(t.minutes), t }));
   const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
 
   const fmtMin = (m: number) => {
@@ -152,17 +182,33 @@ function ArrivalTimesChart({ dates }: { dates: DateEntry[] }) {
     return `${h12}:${String(mn).padStart(2, '0')} ${ampm}`;
   };
 
+  const yStart = classStart !== undefined ? yFor(classStart) : null;
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-24">
-      <text x={PAD} y={12} fontSize="10" fill="#6b7280">{fmtMin(maxT)}</text>
-      <text x={PAD} y={H - 5} fontSize="10" fill="#6b7280">{fmtMin(minT)}</text>
-      <path d={path} stroke="#2563eb" strokeWidth="2" fill="none" />
-      {points.map((p, i) => (
-        <g key={i}>
-          <circle cx={p.x} cy={p.y} r="3.5" fill="#2563eb" />
-          <title>{fmtDate(p.t.date)}: {fmtMin(p.t.minutes)}</title>
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 'auto' }}>
+      <text x={PAD_L - 4} y={PAD_T + 4} fontSize="10" fill="#6b7280" textAnchor="end">{fmtMin(maxT)}</text>
+      <text x={PAD_L - 4} y={H - PAD_B} fontSize="10" fill="#6b7280" textAnchor="end">{fmtMin(minT)}</text>
+
+      {yStart !== null && classStart !== undefined && (
+        <g>
+          <line x1={PAD_L} y1={yStart} x2={W - PAD_R} y2={yStart}
+                stroke="#dc2626" strokeWidth="1.5" strokeDasharray="5 3" />
+          <text x={W - PAD_R} y={yStart - 4} fontSize="10" fill="#dc2626" textAnchor="end" fontWeight="600">
+            class starts {fmtMin(classStart)}
+          </text>
         </g>
-      ))}
+      )}
+
+      <path d={path} stroke="#2563eb" strokeWidth="2" fill="none" />
+      {points.map((p, i) => {
+        const late = classStart !== undefined && p.t.minutes > classStart;
+        return (
+          <g key={i}>
+            <circle cx={p.x} cy={p.y} r="3.5" fill={late ? '#dc2626' : '#2563eb'} />
+            <title>{fmtDate(p.t.date)}: {fmtMin(p.t.minutes)}{late ? ' (late)' : ''}</title>
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -208,11 +254,21 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
     fetchAttendance();
   }, [email, courseCode, apiUrl]);
 
-  const averagePresence = useMemo(() => {
-    if (!data || !data.enrolled) return 0;
-    const total = data.dates.reduce((s, d) => s + d.class_scan_count, 0);
-    return total / data.dates.length / data.enrolled;
+  const enrolled = useMemo(() => {
+    if (!data) return 0;
+    return ENROLLED_OVERRIDE[data.course_code] ?? data.enrolled;
   }, [data]);
+
+  const classStart = useMemo(() => {
+    if (!data) return undefined;
+    return CLASS_START_MINUTES[data.course_code];
+  }, [data]);
+
+  const averagePresence = useMemo(() => {
+    if (!data || !enrolled) return 0;
+    const total = data.dates.reduce((s, d) => s + d.class_scan_count, 0);
+    return total / data.dates.length / enrolled;
+  }, [data, enrolled]);
 
   if (loading) {
     return (
@@ -275,7 +331,7 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
         <h1 className="text-3xl font-bold mt-1">{data.student_name}</h1>
         <p className="text-lg opacity-90">{data.course_name}</p>
         <p className="text-sm opacity-75 mt-2">
-          Enrolled: {data.enrolled} students &middot;{' '}
+          Enrolled: {enrolled} students &middot;{' '}
           Registered barcode: <code className="bg-white/20 px-2 py-0.5 rounded">{data.barcodes_registered.join(', ') || 'none'}</code>
         </p>
       </div>
@@ -310,14 +366,14 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
       <div className="grid md:grid-cols-2 gap-4">
         <div className="bg-white rounded-2xl shadow-lg p-6">
           <h3 className="text-lg font-semibold text-gray-800">Class participation per session</h3>
-          <p className="text-sm text-gray-500 mb-3">Classmates scanned each day (avg {avgPct}% of {data.enrolled})</p>
-          <ClassParticipationChart dates={data.dates} enrolled={data.enrolled} />
+          <p className="text-sm text-gray-500 mb-3">Classmates scanned each day (avg {avgPct}% of {enrolled})</p>
+          <ClassParticipationChart dates={data.dates} enrolled={enrolled} />
         </div>
         {presentDates.length >= 2 && (
           <div className="bg-white rounded-2xl shadow-lg p-6">
             <h3 className="text-lg font-semibold text-gray-800">Your arrival times</h3>
-            <p className="text-sm text-gray-500 mb-3">First scan timestamp per session you attended</p>
-            <ArrivalTimesChart dates={data.dates} />
+            <p className="text-sm text-gray-500 mb-3">First scan timestamp per session you attended. Red dashed line = class start.</p>
+            <ArrivalTimesChart dates={data.dates} classStart={classStart} />
           </div>
         )}
       </div>
@@ -346,7 +402,7 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
                 <tr><td colSpan={5} className="px-4 py-6 text-gray-500">No sessions recorded yet.</td></tr>
               ) : data.dates.map((d) => {
                 const s = STATUS_STYLES[d.status];
-                const pct = data.enrolled ? Math.round((d.class_scan_count / data.enrolled) * 100) : 0;
+                const pct = enrolled ? Math.round((d.class_scan_count / enrolled) * 100) : 0;
                 return (
                   <tr key={d.date} className="border-t hover:bg-blue-50/40">
                     <td className="px-4 py-3 text-gray-800">{fmtDate(d.date)}</td>
@@ -360,7 +416,7 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
                     </td>
                     <td className="px-4 py-3 text-gray-700">
                       <span className="font-semibold">{d.class_scan_count}</span>
-                      <span className="text-gray-500">/{data.enrolled}</span>
+                      <span className="text-gray-500">/{enrolled}</span>
                       <span className="text-gray-400 text-xs ml-1">({pct}%)</span>
                     </td>
                     <td className="px-4 py-3 text-gray-700 text-xs">
