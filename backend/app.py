@@ -11,19 +11,19 @@ from flask_cors import CORS
 
 
 def format_scan_time_et(ts: str) -> str:
-    """Render a scan_timestamp as human-readable Eastern wall-clock time.
-    The upstream Apps Script encodes ET-local times with a fixed EST (UTC-5)
-    offset regardless of date -- so a scan at 12:40 PM EDT is stored as
-    '17:40Z' (the EST equivalent). Subtract 5 hours and render naive so the
-    wall-clock time is correct on both sides of the DST boundary.
-    Input: '2026-02-03T19:11:32Z'. Output: 'Tue Feb 3, 2:11 PM ET'."""
+    """Render a scan_timestamp as human-readable Eastern wall-clock time,
+    to the second. The upstream Apps Script encodes ET-local times with a
+    fixed EST (UTC-5) offset regardless of date -- so a scan at 12:40 PM
+    EDT is stored as '17:40Z' (the EST equivalent). Subtract 5 hours and
+    render naive so the wall-clock time is correct on both sides of DST.
+    Input: '2026-02-03T19:11:32Z'. Output: 'Tue Feb 3, 2:11:32 PM ET'."""
     if not ts:
         return ""
     s = ts.replace("Z", "+00:00").replace(".000+00:00", "+00:00")
     try:
         dt = datetime.fromisoformat(s).replace(tzinfo=None)
         wall = dt - timedelta(hours=5)
-        return wall.strftime("%a %b %-d, %-I:%M %p ET")
+        return wall.strftime("%a %b %-d, %-I:%M:%S %p ET")
     except ValueError:
         return ts
 
@@ -225,7 +225,12 @@ def attendance():
         (course_code,),
     ).fetchall()
     all_dates = [row["scan_date"] for row in all_sessions]
+    scan_count_by_date = {row["scan_date"]: row["cnt"] for row in all_sessions}
     total_sessions = len(all_dates)
+
+    enrolled = db.execute(
+        "SELECT COUNT(*) FROM student WHERE course_code = ?", (course_code,)
+    ).fetchone()[0]
 
     # Check both virtual and physical card barcodes
     barcodes = [barcode_id]
@@ -233,10 +238,12 @@ def attendance():
         barcodes.append(physical_barcode_id)
     placeholders = ",".join("?" * len(barcodes))
     attended_rows = db.execute(
-        f"SELECT DISTINCT scan_date FROM attendance WHERE student_id IN ({placeholders}) AND course_code = ?",
+        f"SELECT scan_date, MIN(scan_timestamp) AS first_ts FROM attendance "
+        f"WHERE student_id IN ({placeholders}) AND course_code = ? GROUP BY scan_date",
         barcodes + [course_code],
     ).fetchall()
-    attended_dates = {row["scan_date"] for row in attended_rows}
+    first_scan_by_date = {row["scan_date"]: row["first_ts"] for row in attended_rows}
+    attended_dates = set(first_scan_by_date.keys())
 
     excused_rows = db.execute(
         "SELECT absence_date, absence_type, reason FROM excused_absence WHERE student_email = ? AND course_code = ?",
@@ -252,7 +259,17 @@ def attendance():
             status = "present"
         else:
             status = "absent"
-        dates.append({"date": d, "status": status})
+        entry = {
+            "date": d,
+            "status": status,
+            "class_scan_count": scan_count_by_date.get(d, 0),
+            "first_scan_time": format_scan_time_et(first_scan_by_date.get(d))
+                if d in first_scan_by_date else None,
+        }
+        if d in excused_map:
+            entry["absence_type"] = excused_map[d]["absence_type"]
+            entry["reason"] = excused_map[d]["reason"]
+        dates.append(entry)
 
     excused_count = len(set(excused_map.keys()) & set(all_dates))
     sessions_attended = len(attended_dates & set(all_dates)) - excused_count
@@ -264,10 +281,14 @@ def attendance():
         else 1.0
     )
 
+    barcodes_registered = [b for b in (barcode_id, physical_barcode_id) if b]
+
     return jsonify({
         "student_name": f"{student['first_name']} {student['last_name']}",
         "course_code": course_code,
         "course_name": student["course_name"],
+        "enrolled": enrolled,
+        "barcodes_registered": barcodes_registered,
         "total_sessions": total_sessions,
         "sessions_attended": sessions_attended,
         "excused_count": excused_count,
@@ -393,11 +414,6 @@ def debug_view():
             f"&middot; Effective rate: <b>{rate:.1f}%</b></div>"
         )
 
-    out.append(
-        "<p class='meta' style='margin-top:2rem'>Note: scan timestamps from the scanner "
-        "are currently recorded as midnight UTC for the session date &mdash; individual scan "
-        "instants are not captured by the upstream Google Sheets API.</p>"
-    )
     out.append("</body></html>")
     return "".join(out)
 
