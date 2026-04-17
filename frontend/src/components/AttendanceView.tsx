@@ -101,48 +101,6 @@ function SessionTimeline({ dates }: { dates: DateEntry[] }) {
   );
 }
 
-function ClassParticipationChart({ dates, enrolled }: { dates: DateEntry[]; enrolled: number }) {
-  if (!dates.length || !enrolled) return null;
-  const maxCnt = Math.max(enrolled, ...dates.map((d) => d.class_scan_count));
-  const W = 320, H = 110, PAD_L = 8, PAD_R = 8, PAD_T = 6, PAD_B = 18;
-  const plotW = W - PAD_L - PAD_R;
-  const plotH = H - PAD_T - PAD_B;
-  const gap = 2;
-  const barW = Math.max(3, (plotW - gap * (dates.length - 1)) / dates.length);
-  const yEnrolled = PAD_T + plotH - (enrolled / maxCnt) * plotH;
-
-  return (
-    <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 'auto' }}>
-        {/* Enrolled reference line */}
-        <line x1={PAD_L} y1={yEnrolled} x2={W - PAD_R} y2={yEnrolled}
-              stroke="#9ca3af" strokeDasharray="3 3" strokeWidth="1" />
-        <text x={W - PAD_R} y={yEnrolled - 3} fontSize="9" fill="#6b7280" textAnchor="end">
-          {enrolled} enrolled
-        </text>
-        {dates.map((d, i) => {
-          const h = (d.class_scan_count / maxCnt) * plotH;
-          const x = PAD_L + i * (barW + gap);
-          const y = PAD_T + plotH - h;
-          const s = STATUS_STYLES[d.status];
-          return (
-            <g key={d.date}>
-              <rect x={x} y={y} width={barW} height={h} fill={s.fill} opacity="0.85" rx="1.5" />
-              <title>{fmtDate(d.date)}: {d.class_scan_count}/{enrolled} scanned ({s.label})</title>
-            </g>
-          );
-        })}
-        {/* X axis baseline */}
-        <line x1={PAD_L} y1={H - PAD_B} x2={W - PAD_R} y2={H - PAD_B} stroke="#e5e7eb" />
-        <text x={PAD_L} y={H - 4} fontSize="9" fill="#6b7280">{fmtDate(dates[0].date)}</text>
-        <text x={W - PAD_R} y={H - 4} fontSize="9" fill="#6b7280" textAnchor="end">
-          {fmtDate(dates[dates.length - 1].date)}
-        </text>
-      </svg>
-    </div>
-  );
-}
-
 function ArrivalTimesChart({ dates, classStart }: { dates: DateEntry[]; classStart?: number }) {
   const presentDates = dates.filter((d) => d.first_scan_time);
   if (presentDates.length < 2) return null;
@@ -165,7 +123,7 @@ function ArrivalTimesChart({ dates, classStart }: { dates: DateEntry[]; classSta
   const maxT = Math.max(...allY) + 2;
   const range = Math.max(1, maxT - minT);
 
-  const W = 320, H = 140, PAD_L = 48, PAD_R = 8, PAD_T = 10, PAD_B = 18;
+  const W = 640, H = 180, PAD_L = 56, PAD_R = 16, PAD_T = 14, PAD_B = 22;
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
   const xStep = plotW / Math.max(1, times.length - 1);
@@ -264,12 +222,6 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
     return CLASS_START_MINUTES[data.course_code];
   }, [data]);
 
-  const averagePresence = useMemo(() => {
-    if (!data || !enrolled) return 0;
-    const total = data.dates.reduce((s, d) => s + d.class_scan_count, 0);
-    return total / data.dates.length / enrolled;
-  }, [data, enrolled]);
-
   if (loading) {
     return (
       <div className="w-full max-w-md mx-auto text-center py-12">
@@ -317,7 +269,6 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
   if (!data) return null;
 
   const presentDates = data.dates.filter((d) => d.first_scan_time);
-  const avgPct = Math.round(averagePresence * 100);
 
   return (
     <div className="w-full max-w-3xl mx-auto space-y-6">
@@ -363,20 +314,13 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
       </div>
 
       {/* Visualizations */}
-      <div className="grid md:grid-cols-2 gap-4">
+      {presentDates.length >= 2 && (
         <div className="bg-white rounded-2xl shadow-lg p-6">
-          <h3 className="text-lg font-semibold text-gray-800">Class participation per session</h3>
-          <p className="text-sm text-gray-500 mb-3">Classmates scanned each day (avg {avgPct}% of {enrolled})</p>
-          <ClassParticipationChart dates={data.dates} enrolled={enrolled} />
+          <h3 className="text-lg font-semibold text-gray-800">Your arrival times</h3>
+          <p className="text-sm text-gray-500 mb-3">First scan timestamp per session you attended. Red dashed line = class start.</p>
+          <ArrivalTimesChart dates={data.dates} classStart={classStart} />
         </div>
-        {presentDates.length >= 2 && (
-          <div className="bg-white rounded-2xl shadow-lg p-6">
-            <h3 className="text-lg font-semibold text-gray-800">Your arrival times</h3>
-            <p className="text-sm text-gray-500 mb-3">First scan timestamp per session you attended. Red dashed line = class start.</p>
-            <ArrivalTimesChart dates={data.dates} classStart={classStart} />
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Full dump table */}
       <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
@@ -412,7 +356,9 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
                       </span>
                     </td>
                     <td className="px-4 py-3 text-gray-700 font-mono text-xs">
-                      {d.first_scan_time || <span className="text-gray-400">--</span>}
+                      {d.first_scan_time
+                        ? d.first_scan_time.split(',').slice(1).join(',').trim() || d.first_scan_time
+                        : <span className="text-gray-400">--</span>}
                     </td>
                     <td className="px-4 py-3 text-gray-700">
                       <span className="font-semibold">{d.class_scan_count}</span>
