@@ -322,7 +322,7 @@ def attendance():
         dates.append(entry)
 
     excused_count = len(set(excused_map.keys()) & set(all_dates))
-    sessions_attended = len(attended_dates & set(all_dates)) - excused_count
+    sessions_attended = len((attended_dates & set(all_dates)) - set(excused_map.keys()))
     unexcused_count = total_sessions - sessions_attended - excused_count
 
     effective_rate = (
