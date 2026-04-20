@@ -353,5 +353,30 @@ class EnrollRouteTest(unittest.TestCase):
         r.close()
 
 
+class ClaimLogSchemaTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+
+    def test_claim_log_table_exists(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(claim_log)")]
+        self.assertIn("email", cols)
+        self.assertIn("submitted_barcode", cols)
+        self.assertIn("variants_tried", cols)
+        self.assertIn("matched_barcode", cols)
+        self.assertIn("absent_before", cols)
+        self.assertIn("absent_after", cols)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

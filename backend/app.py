@@ -124,6 +124,18 @@ CREATE TABLE IF NOT EXISTS excused_absence (
     source TEXT DEFAULT 'typeform',
     UNIQUE(student_email, course_code, absence_date)
 );
+
+CREATE TABLE IF NOT EXISTS claim_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempted_at TEXT NOT NULL,
+    email TEXT,
+    course_code TEXT,
+    submitted_barcode TEXT,
+    variants_tried TEXT,
+    matched_barcode TEXT,
+    absent_before INTEGER,
+    absent_after INTEGER
+);
 """
 
 
