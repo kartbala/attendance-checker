@@ -426,6 +426,40 @@ def debug_view():
         ".summary{background:#fafafa;padding:0.6rem 1rem;border-left:4px solid #333;margin-top:0.5rem}",
         "</style></head><body>",
         f"<h1>{name}</h1>",
+        "<form id='link-form' style='background:#fffbe6;border:2px solid #e7c66e;padding:1rem;border-radius:8px;margin:1rem 0'>",
+        "<b>Link physical barcode</b> (admin only)<br>",
+        "<label>Physical barcode: <input type='text' name='barcode' required style='font-family:monospace;padding:0.3rem'></label> ",
+        "<label>Admin key: <input type='password' name='key' required style='padding:0.3rem'></label> ",
+        "<button type='submit' style='padding:0.3rem 0.8rem'>Link</button>",
+        "<div id='link-result' style='margin-top:0.5rem'></div>",
+        "</form>",
+        f"""<script>
+document.getElementById('link-form').addEventListener('submit', async (e) => {{
+  e.preventDefault();
+  const f = e.target;
+  const res = document.getElementById('link-result');
+  res.textContent = 'Linking...';
+  try {{
+    const r = await fetch('/admin/link-physical', {{
+      method: 'POST',
+      headers: {{
+        'Content-Type': 'application/json',
+        'X-Sync-Key': f.key.value,
+      }},
+      body: JSON.stringify({{
+        email: {email!r},
+        physical_barcode_id: f.barcode.value.trim(),
+      }}),
+    }});
+    const j = await r.json();
+    if (!r.ok) {{ res.style.color = '#b00020'; res.textContent = 'Error: ' + (j.error || r.status); return; }}
+    const d = j.attendance_delta;
+    res.style.color = '#0a7a0a';
+    res.textContent = 'Linked. Unexcused absences: ' + d.absent_before + ' -> ' + d.absent_after + '. Reloading...';
+    setTimeout(() => location.reload(), 1200);
+  }} catch (err) {{ res.style.color = '#b00020'; res.textContent = 'Request failed: ' + err; }}
+}});
+</script>""",
         f"<p class='meta'>{email} &middot; HUID: <code>{students[0]['huid'] or '(none)'}</code> &middot; "
         f"Virtual barcode: <code>{students[0]['barcode_id'] or '(none)'}</code>"
         + (f" &middot; Physical barcode: <code>{students[0]['physical_barcode_id']}</code>" if students[0]['physical_barcode_id'] else "")
