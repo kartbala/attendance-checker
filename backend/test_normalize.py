@@ -485,9 +485,12 @@ class ClaimPhysicalBarcodeTest(unittest.TestCase):
         self.assertEqual(body["attendance_delta"]["absent_after"], 0)
 
     def test_no_match_still_saves_and_returns_zero_delta(self):
+        # A non-zero digit string with no attendance match still saves and
+        # returns a zero delta. (All-zero strings are rejected with 400 --
+        # see test_400_on_empty_after_normalize.)
         r = self.client.post("/claim-physical-barcode", json={
             "email": "charrikka@bison.howard.edu",
-            "physical_barcode_id": "0000000000",
+            "physical_barcode_id": "5555555555",
         })
         self.assertEqual(r.status_code, 200)
         body = r.get_json()
@@ -517,6 +520,57 @@ class ClaimPhysicalBarcodeTest(unittest.TestCase):
             "physical_barcode_id": "9988776655",
         })
         self.assertEqual(r.status_code, 404)
+
+    def test_409_on_collision_with_another_student(self):
+        # First student claims the barcode successfully
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "s0@bison.howard.edu",
+            "physical_barcode_id": "9988776655",
+        })
+        self.assertEqual(r.status_code, 200)
+        # Second student tries to claim the SAME barcode -> 409
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "9988776655",
+        })
+        self.assertEqual(r.status_code, 409)
+
+    def test_same_student_can_reclaim(self):
+        # Charrikka claims once, then claims again with the same card -- OK
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "9988776655",
+        })
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.get_json().get("replaced_previous", False))
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "9988776655",
+        })
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.get_json().get("replaced_previous", False))
+
+    def test_replaced_previous_true_when_changing_card(self):
+        # Claim first card
+        self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "9988776655",
+        })
+        # Claim a different card -> replaced_previous True
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "1234567890",
+        })
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["replaced_previous"])
+
+    def test_400_on_empty_after_normalize(self):
+        # All-zeros and empty-string submissions are rejected
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "000000",
+        })
+        self.assertEqual(r.status_code, 400)
 
 
 class AttendanceResponseFieldsTest(unittest.TestCase):

@@ -776,9 +776,19 @@ def claim_physical_barcode():
         return jsonify({"error": "email not found"}), 404
     courses = [r["course_code"] for r in rows]
 
+    # Snapshot the prior physical barcode so we can flag overwrites in the
+    # response (UI can show "you replaced your earlier card").
+    prev_row = db.execute(
+        "SELECT DISTINCT physical_barcode_id FROM student "
+        "WHERE email = ? AND physical_barcode_id IS NOT NULL "
+        "AND physical_barcode_id != '' LIMIT 1",
+        (email,),
+    ).fetchone()
+    previous_barcode = prev_row[0] if prev_row else None
+
     variants = normalize_barcode_variants(submitted)
     matched = None
-    for variant in variants:
+    for variant in sorted(variants):
         hit = db.execute(
             f"SELECT 1 FROM attendance WHERE student_id = ? "
             f"AND course_code IN ({','.join('?' * len(courses))}) LIMIT 1",
@@ -789,7 +799,27 @@ def claim_physical_barcode():
             break
 
     canonical = normalize_barcode(submitted)
+    # Reject submissions that normalize to empty, None, or a single "0".
+    # These pass the non-empty submitted check but produce no useful link.
+    if not canonical or canonical == "0":
+        return jsonify({
+            "error": "barcode must contain digits and not be all zeros",
+        }), 400
     to_save = matched or canonical or submitted
+
+    # Prevent barcode theft: the same physical barcode cannot be claimed
+    # by two different students in the same course. Re-claim by the same
+    # email is fine (handled by the UPDATE matching on email).
+    collision = db.execute(
+        f"SELECT email FROM student "
+        f"WHERE physical_barcode_id = ? AND email != ? "
+        f"AND course_code IN ({','.join('?' * len(courses))}) LIMIT 1",
+        [to_save, email] + courses,
+    ).fetchone()
+    if collision:
+        return jsonify({
+            "error": "barcode already claimed by another student in this course",
+        }), 409
 
     absent_before = _compute_attendance_delta(db, email)
     db.execute(
@@ -813,6 +843,7 @@ def claim_physical_barcode():
         "linked": True,
         "physical_barcode_id": to_save,
         "matched": matched is not None,
+        "replaced_previous": bool(previous_barcode and previous_barcode != to_save),
         "attendance_delta": {
             "absent_before": absent_before, "absent_after": absent_after,
         },
