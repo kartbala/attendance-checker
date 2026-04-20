@@ -670,5 +670,19 @@ class DebugClaimsRouteTest(unittest.TestCase):
         self.assertIn(b"Last 50 claim attempts", r.data)
 
 
+class SkipReasonColumnTest(unittest.TestCase):
+    def test_column_exists(self):
+        fd, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(db_path)
+        _fresh_app(db_path)
+        with sqlite3.connect(db_path) as conn:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(student)")]
+        self.assertIn("physical_barcode_skip_reason", cols)
+        for suffix in ("", "-wal", "-shm"):
+            try: os.unlink(db_path + suffix)
+            except FileNotFoundError: pass
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

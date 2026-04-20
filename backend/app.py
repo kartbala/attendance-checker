@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS student (
     course_name TEXT,
     barcode_id TEXT,
     physical_barcode_id TEXT,
+    physical_barcode_skip_reason TEXT,
     huid TEXT,
     UNIQUE(email, course_code)
 );
@@ -194,6 +195,10 @@ def init_db():
     # Migration for existing DBs
     try:
         conn.execute("ALTER TABLE student ADD COLUMN physical_barcode_id TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE student ADD COLUMN physical_barcode_skip_reason TEXT")
     except sqlite3.OperationalError:
         pass  # column already exists
     _migrate_normalize_barcodes(conn)
