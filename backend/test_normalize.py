@@ -350,6 +350,7 @@ class EnrollRouteTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"<h1>Bulk Enroll", r.data)
         self.assertIn(b"enroll-form", r.data)
+        r.close()
 
 
 if __name__ == "__main__":
