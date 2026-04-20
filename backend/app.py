@@ -1,5 +1,6 @@
 """Student Attendance Checker API."""
 
+import json
 import os
 import re
 import sqlite3
@@ -697,6 +698,66 @@ def admin_link_physical():
         "attendance_delta": {
             "absent_before": absent_before,
             "absent_after": absent_after,
+        },
+    })
+
+
+@app.route("/claim-physical-barcode", methods=["POST"])
+def claim_physical_barcode():
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip().lower()
+    submitted = (data.get("physical_barcode_id") or "").strip()
+    if not email or not submitted:
+        return jsonify({"error": "email and physical_barcode_id required"}), 400
+
+    db = get_db()
+    rows = db.execute(
+        "SELECT DISTINCT course_code FROM student WHERE email = ?",
+        (email,),
+    ).fetchall()
+    if not rows:
+        return jsonify({"error": "email not found"}), 404
+    courses = [r["course_code"] for r in rows]
+
+    variants = normalize_barcode_variants(submitted)
+    matched = None
+    for variant in variants:
+        hit = db.execute(
+            f"SELECT 1 FROM attendance WHERE student_id = ? "
+            f"AND course_code IN ({','.join('?' * len(courses))}) LIMIT 1",
+            [variant] + courses,
+        ).fetchone()
+        if hit:
+            matched = variant
+            break
+
+    canonical = normalize_barcode(submitted)
+    to_save = matched or canonical or submitted
+
+    absent_before = _compute_attendance_delta(db, email)
+    db.execute(
+        "UPDATE student SET physical_barcode_id = ? WHERE email = ?",
+        (to_save, email),
+    )
+    db.commit()
+    absent_after = _compute_attendance_delta(db, email)
+
+    db.execute(
+        "INSERT INTO claim_log (attempted_at, email, course_code, "
+        "submitted_barcode, variants_tried, matched_barcode, "
+        "absent_before, absent_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (datetime.utcnow().isoformat() + "Z",
+         email, ",".join(courses), submitted, json.dumps(sorted(variants)),
+         matched, absent_before, absent_after),
+    )
+    db.commit()
+
+    return jsonify({
+        "linked": True,
+        "physical_barcode_id": to_save,
+        "matched": matched is not None,
+        "attendance_delta": {
+            "absent_before": absent_before, "absent_after": absent_after,
         },
     })
 

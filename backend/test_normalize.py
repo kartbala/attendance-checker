@@ -414,5 +414,110 @@ class NormalizeVariantsTest(unittest.TestCase):
         self.assertIsInstance(self.variants("7142851387095"), set)
 
 
+class ClaimPhysicalBarcodeTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+        self.client = self.app_mod.app.test_client()
+        self._seed()
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+
+    def _seed(self):
+        course = "INFO-335-04"
+        students = [
+            {"email": f"s{i}@bison.howard.edu", "first_name": f"S{i}",
+             "last_name": "T", "course_code": course, "course_name": "POM",
+             "barcode_id": f"11111111111{i:02d}", "physical_barcode_id": None,
+             "huid": f"@0000000{i}"}
+            for i in range(5)
+        ] + [
+            {"email": "charrikka@bison.howard.edu", "first_name": "Charrikka",
+             "last_name": "Gordon", "course_code": course, "course_name": "POM",
+             "barcode_id": "7142851387095", "physical_barcode_id": None,
+             "huid": "@03109999"},
+        ]
+        attendance = []
+        for d in ("2026-02-03", "2026-02-05", "2026-02-10"):
+            for i in range(5):
+                attendance.append({
+                    "student_id": f"11111111111{i:02d}", "course_code": course,
+                    "scan_date": d, "scan_timestamp": f"{d}T19:11:32Z",
+                })
+            attendance.append({
+                "student_id": "9988776655", "course_code": course,
+                "scan_date": d, "scan_timestamp": f"{d}T19:15:00Z",
+            })
+        self.client.post("/sync/push", json={
+            "students": students, "attendance": attendance,
+        }, headers={"X-Sync-Key": "testkey"})
+
+    def test_matches_and_links(self):
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "9988776655",
+        })
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertTrue(body["linked"])
+        self.assertEqual(body["attendance_delta"]["absent_before"], 3)
+        self.assertEqual(body["attendance_delta"]["absent_after"], 0)
+
+    def test_check_digit_variant_matches(self):
+        """Student's phone camera reads the physical card and produces a
+        15-digit value (has an extra trailing digit compared to what the
+        classroom scanner produces). Variant matching should still find
+        the orphan."""
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "99887766550",  # one extra trailing digit
+        })
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertTrue(body["linked"])
+        self.assertEqual(body["attendance_delta"]["absent_after"], 0)
+
+    def test_no_match_still_saves_and_returns_zero_delta(self):
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "0000000000",
+        })
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertTrue(body["linked"])
+        self.assertEqual(
+            body["attendance_delta"]["absent_before"]
+            - body["attendance_delta"]["absent_after"], 0)
+
+    def test_claim_log_populated(self):
+        self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "9988776655",
+        })
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT email, submitted_barcode, matched_barcode, "
+                "absent_before, absent_after FROM claim_log"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "charrikka@bison.howard.edu")
+        self.assertEqual(rows[0][1], "9988776655")
+        self.assertEqual(rows[0][2], "9988776655")
+
+    def test_404_on_unknown_email(self):
+        r = self.client.post("/claim-physical-barcode", json={
+            "email": "nobody@bison.howard.edu",
+            "physical_barcode_id": "9988776655",
+        })
+        self.assertEqual(r.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
