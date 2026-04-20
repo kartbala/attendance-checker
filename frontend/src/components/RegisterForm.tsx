@@ -1,6 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
-import { useUsbScanner } from '../hooks/useUsbScanner';
+import { useState } from 'react';
+import { BarcodeScanner } from './BarcodeScanner';
 
 interface RegisterFormProps {
   onRegistered: (email: string) => void;
@@ -8,92 +7,15 @@ interface RegisterFormProps {
   apiUrl: string;
 }
 
-type ScanMode = 'usb' | 'camera';
-
 export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormProps) {
   const [email, setEmail] = useState('');
   const [huid, setHuid] = useState('');
   const [barcodeId, setBarcodeId] = useState('');
   const [physicalBarcodeId, setPhysicalBarcodeId] = useState('');
   const [showPhysicalScan, setShowPhysicalScan] = useState(false);
-  const [scanMode, setScanMode] = useState<ScanMode>('camera');
-  const [isCameraActive, setIsCameraActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [lookupEmail, setLookupEmail] = useState('');
-  const scannerRef = useRef<Html5Qrcode | null>(null);
-
-  const [scanTarget, setScanTarget] = useState<'virtual' | 'physical'>('virtual');
-
-  const handleBarcodeScan = useCallback((barcode: string) => {
-    if (scanTarget === 'physical') {
-      setPhysicalBarcodeId(barcode.trim());
-    } else {
-      setBarcodeId(barcode.trim());
-    }
-    setIsCameraActive(false);
-    if (navigator.vibrate) navigator.vibrate(200);
-  }, [scanTarget]);
-
-  // USB scanner -- only active when not focused on an input
-  useUsbScanner({
-    onScan: handleBarcodeScan,
-    enabled: scanMode === 'usb' && !isCameraActive,
-    minLength: 3,
-    maxDelay: 50,
-  });
-
-  // Camera scanner
-  useEffect(() => {
-    if (!isCameraActive || scanMode !== 'camera') return;
-    let mounted = true;
-
-    const startCamera = async () => {
-      await new Promise(r => setTimeout(r, 100));
-
-      if (!scannerRef.current) {
-        scannerRef.current = new Html5Qrcode("barcode-reader", {
-          verbose: false,
-          formatsToSupport: [
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8,
-            Html5QrcodeSupportedFormats.CODE_128,
-            Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.UPC_A,
-            Html5QrcodeSupportedFormats.UPC_E,
-          ],
-        });
-      }
-
-      if (scannerRef.current.isScanning) return;
-
-      try {
-        await scannerRef.current.start(
-          { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 250, height: 150 }, aspectRatio: 1.5 },
-          (decodedText) => {
-            if (!mounted) return;
-            handleBarcodeScan(decodedText);
-          },
-          () => {},
-        );
-      } catch (err) {
-        if (mounted) {
-          setError(err instanceof Error ? err.message : "Camera failed to start");
-          setIsCameraActive(false);
-        }
-      }
-    };
-
-    startCamera();
-
-    return () => {
-      mounted = false;
-      if (scannerRef.current?.isScanning) {
-        scannerRef.current.stop().catch(() => {});
-      }
-    };
-  }, [isCameraActive, scanMode, handleBarcodeScan]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -184,70 +106,17 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
               <span className="text-lg font-mono text-green-800">{barcodeId}</span>
               <button
                 type="button"
-                onClick={() => { setBarcodeId(''); setScanTarget('virtual'); }}
+                onClick={() => setBarcodeId('')}
                 className="text-green-600 hover:text-green-800 text-sm font-medium"
               >
                 Rescan
               </button>
             </div>
           ) : (
-            <div className="space-y-3">
-              {/* Mode toggle */}
-              <div className="flex bg-gray-100 rounded-xl p-1">
-                <button
-                  type="button"
-                  onClick={() => { setIsCameraActive(false); setScanMode('camera'); }}
-                  className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all ${
-                    scanMode === 'camera' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600'
-                  }`}
-                >
-                  Camera
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setIsCameraActive(false); setScanMode('usb'); }}
-                  className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all ${
-                    scanMode === 'usb' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600'
-                  }`}
-                >
-                  USB Scanner
-                </button>
-              </div>
-
-              {scanMode === 'camera' && (
-                <>
-                  <div
-                    id="barcode-reader"
-                    className={`w-full bg-black rounded-xl overflow-hidden transition-all ${isCameraActive ? 'h-48' : 'h-0'}`}
-                  />
-                  {!isCameraActive && (
-                    <button
-                      type="button"
-                      onClick={() => setIsCameraActive(true)}
-                      className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-all"
-                    >
-                      Start Camera
-                    </button>
-                  )}
-                  {isCameraActive && (
-                    <button
-                      type="button"
-                      onClick={() => setIsCameraActive(false)}
-                      className="w-full py-3 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-xl transition-all"
-                    >
-                      Stop Camera
-                    </button>
-                  )}
-                </>
-              )}
-
-              {scanMode === 'usb' && (
-                <div className="text-center py-6 bg-gray-50 rounded-xl border-2 border-dashed border-gray-300">
-                  <p className="text-lg text-gray-600">Point your USB scanner at the barcode</p>
-                  <p className="text-sm text-gray-400 mt-1">Listening for scanner input...</p>
-                </div>
-              )}
-            </div>
+            <BarcodeScanner
+              scannerId="barcode-reader-virtual"
+              onScan={setBarcodeId}
+            />
           )}
         </div>
 
@@ -255,7 +124,7 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
         {barcodeId && !showPhysicalScan && (
           <button
             type="button"
-            onClick={() => { setShowPhysicalScan(true); setScanTarget('physical'); }}
+            onClick={() => setShowPhysicalScan(true)}
             className="w-full text-sm text-gray-500 hover:text-blue-600 py-2"
           >
             + Add physical Bison card (optional -- only if you've used one in class)
@@ -272,7 +141,7 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
                 <span className="text-lg font-mono text-green-800">{physicalBarcodeId}</span>
                 <button
                   type="button"
-                  onClick={() => { setPhysicalBarcodeId(''); setScanTarget('physical'); }}
+                  onClick={() => setPhysicalBarcodeId('')}
                   className="text-green-600 hover:text-green-800 text-sm font-medium"
                 >
                   Rescan
@@ -281,16 +150,13 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
             ) : (
               <div className="space-y-2">
                 <p className="text-sm text-gray-500">Scan the barcode on your physical Bison card</p>
+                <BarcodeScanner
+                  scannerId="barcode-reader-physical"
+                  onScan={setPhysicalBarcodeId}
+                />
                 <button
                   type="button"
-                  onClick={() => { setScanTarget('physical'); setIsCameraActive(true); }}
-                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-all"
-                >
-                  Scan Physical Card
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowPhysicalScan(false); setScanTarget('virtual'); }}
+                  onClick={() => setShowPhysicalScan(false)}
                   className="w-full text-sm text-gray-500 hover:text-gray-700 py-1"
                 >
                   Skip
