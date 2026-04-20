@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { BarcodeScanner } from './BarcodeScanner';
 
 interface DateEntry {
   date: string;
@@ -21,6 +22,8 @@ interface AttendanceData {
   unexcused_count: number;
   effective_rate: number;
   dates: DateEntry[];
+  section_orphan_count: number;
+  has_physical_barcode: boolean;
 }
 
 interface CourseOption {
@@ -177,6 +180,40 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
   const [studentName, setStudentName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showClaimModal, setShowClaimModal] = useState(false);
+  const [claimResult, setClaimResult] = useState<
+    { kind: 'success'; delta: number } | { kind: 'no-match'; barcode: string } | null
+  >(null);
+
+  const shouldShowBanner =
+    data && !data.has_physical_barcode &&
+    data.unexcused_count >= 2 &&
+    data.section_orphan_count >= 1;
+
+  const handleClaimScan = async (scannedBarcode: string) => {
+    try {
+      const resp = await fetch(`${apiUrl}/claim-physical-barcode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, physical_barcode_id: scannedBarcode }),
+      });
+      const j = await resp.json();
+      if (!resp.ok) {
+        setClaimResult({ kind: 'no-match', barcode: scannedBarcode });
+        return;
+      }
+      const delta = j.attendance_delta.absent_before - j.attendance_delta.absent_after;
+      if (delta > 0) {
+        setClaimResult({ kind: 'success', delta });
+        // Refetch attendance to update the page
+        setTimeout(() => { setShowClaimModal(false); setClaimResult(null); window.location.reload(); }, 2500);
+      } else {
+        setClaimResult({ kind: 'no-match', barcode: scannedBarcode });
+      }
+    } catch {
+      setClaimResult({ kind: 'no-match', barcode: scannedBarcode });
+    }
+  };
 
   useEffect(() => {
     const fetchAttendance = async () => {
@@ -275,6 +312,29 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
       <button onClick={onBack} className="text-blue-600 hover:text-blue-800 text-lg font-medium">
         &larr; Back
       </button>
+
+      {shouldShowBanner && (
+        <div className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-5 flex items-start gap-4">
+          <div className="text-3xl">🎫</div>
+          <div className="flex-1">
+            <h3 className="text-lg font-semibold text-amber-900">
+              Did you scan your physical Bison card in class?
+            </h3>
+            <p className="text-base text-amber-800 mt-1">
+              There {data.section_orphan_count === 1 ? 'is' : 'are'}{' '}
+              <b>{data.section_orphan_count}</b> unclaimed scan
+              {data.section_orphan_count === 1 ? '' : 's'} in your section.
+              Scan your physical card to count yours.
+            </p>
+            <button
+              onClick={() => { setShowClaimModal(true); setClaimResult(null); }}
+              className="mt-3 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg"
+            >
+              Scan physical card
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Hero card */}
       <div className="bg-gradient-to-br from-blue-600 to-indigo-700 text-white rounded-3xl shadow-xl p-8">
@@ -380,6 +440,43 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
         Timestamps are captured by the classroom barcode scanner and recorded to the second in Eastern Time.
         Excused absences come from your Typeform submissions.
       </div>
+
+      {showClaimModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+             onClick={() => { if (!claimResult || claimResult.kind === 'no-match') { setShowClaimModal(false); setClaimResult(null); } }}>
+          <div className="bg-white rounded-2xl shadow-xl p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
+            {!claimResult && (
+              <>
+                <h3 className="text-xl font-semibold text-gray-900 mb-3">Scan your physical card</h3>
+                <BarcodeScanner onScan={handleClaimScan} scannerId="barcode-reader-claim" />
+                <button onClick={() => setShowClaimModal(false)}
+                        className="w-full mt-3 py-2 text-gray-600 hover:text-gray-800">Cancel</button>
+              </>
+            )}
+            {claimResult?.kind === 'success' && (
+              <div className="text-center">
+                <div className="text-5xl mb-3">✅</div>
+                <h3 className="text-xl font-semibold text-green-800 mb-2">Found {claimResult.delta} scan{claimResult.delta === 1 ? '' : 's'}!</h3>
+                <p className="text-gray-600">Reloading your attendance...</p>
+              </div>
+            )}
+            {claimResult?.kind === 'no-match' && (
+              <div>
+                <div className="text-5xl mb-3 text-center">⚠️</div>
+                <h3 className="text-xl font-semibold text-gray-900 mb-2">No matching scans found</h3>
+                <p className="text-gray-700 mb-3">
+                  We couldn't find class scans matching that barcode. Email Dr. B at{' '}
+                  <a href="mailto:karthik.b@Howard.edu" className="text-blue-600 underline">karthik.b@Howard.edu</a>{' '}
+                  and include this barcode:
+                </p>
+                <code className="block bg-gray-100 px-3 py-2 rounded font-mono text-sm break-all">{claimResult.barcode}</code>
+                <button onClick={() => { setShowClaimModal(false); setClaimResult(null); }}
+                        className="w-full mt-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg">Close</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
