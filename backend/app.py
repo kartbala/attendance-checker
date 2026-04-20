@@ -547,6 +547,14 @@ document.getElementById('link-form').addEventListener('submit', async (e) => {{
     return "".join(out)
 
 
+@app.route("/enroll")
+def enroll_page():
+    # Static file; admin key is read client-side from ?key=... and sent in
+    # X-Sync-Key header on the AJAX POSTs, which is what actually enforces
+    # auth. Serving the HTML itself is not sensitive.
+    return app.send_static_file("enroll.html")
+
+
 @app.route("/sync/push", methods=["POST"])
 def sync_push():
     auth_err = require_sync_key()

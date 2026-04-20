@@ -330,5 +330,27 @@ class AdminLinkPhysicalTest(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
 
+class EnrollRouteTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+        self.client = self.app_mod.app.test_client()
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+
+    def test_enroll_serves_static_html(self):
+        r = self.client.get("/enroll")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"<h1>Bulk Enroll", r.data)
+        self.assertIn(b"enroll-form", r.data)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
