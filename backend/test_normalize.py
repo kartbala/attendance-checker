@@ -684,5 +684,55 @@ class SkipReasonColumnTest(unittest.TestCase):
             except FileNotFoundError: pass
 
 
+class RegisterWithSkipReasonTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+        self.client = self.app_mod.app.test_client()
+        # Seed one enrolled student
+        self.client.post("/sync/push", json={
+            "students": [{
+                "email": "s1@bison.howard.edu", "first_name": "S", "last_name": "One",
+                "course_code": "INFO-335-04", "course_name": "POM",
+                "barcode_id": None, "physical_barcode_id": None, "huid": None,
+            }], "attendance": [],
+        }, headers={"X-Sync-Key": "testkey"})
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try: os.unlink(self.db_path + suffix)
+            except FileNotFoundError: pass
+
+    def test_rejects_without_physical_or_skip(self):
+        r = self.client.post("/register", json={
+            "email": "s1@bison.howard.edu", "huid": "@01234567",
+            "barcode_id": "123456",
+        })
+        self.assertEqual(r.status_code, 400)
+
+    def test_accepts_with_physical(self):
+        r = self.client.post("/register", json={
+            "email": "s1@bison.howard.edu", "huid": "@01234567",
+            "barcode_id": "123456", "physical_barcode_id": "987654",
+        })
+        self.assertEqual(r.status_code, 200)
+
+    def test_accepts_with_skip_reason(self):
+        r = self.client.post("/register", json={
+            "email": "s1@bison.howard.edu", "huid": "@01234567",
+            "barcode_id": "123456",
+            "physical_barcode_skip_reason": "privacy-screen",
+        })
+        self.assertEqual(r.status_code, 200)
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT physical_barcode_skip_reason FROM student "
+                "WHERE email = ?", ("s1@bison.howard.edu",)
+            ).fetchone()
+        self.assertEqual(row[0], "privacy-screen")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

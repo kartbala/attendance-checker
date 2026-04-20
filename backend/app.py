@@ -276,6 +276,7 @@ def register():
     huid = (data.get("huid") or "").strip()
     barcode_id = (data.get("barcode_id") or "").strip()
     physical_barcode_id = (data.get("physical_barcode_id") or "").strip()
+    skip_reason = (data.get("physical_barcode_skip_reason") or "").strip()
 
     errors = []
     if not EMAIL_RE.match(email):
@@ -286,6 +287,11 @@ def register():
         errors.append("Barcode must be numeric")
     if physical_barcode_id and not BARCODE_RE.match(physical_barcode_id):
         errors.append("Physical card barcode must be numeric")
+    if not physical_barcode_id and not skip_reason:
+        errors.append(
+            "Provide a physical card barcode or a skip reason "
+            "(physical_barcode_skip_reason)"
+        )
     if errors:
         return jsonify({"error": "Validation failed", "details": errors}), 400
 
@@ -304,8 +310,9 @@ def register():
         }), 404
 
     db.execute(
-        "UPDATE student SET barcode_id = ?, physical_barcode_id = ?, huid = ? WHERE email = ?",
-        (barcode_id, physical_barcode_id or None, huid, email),
+        "UPDATE student SET barcode_id = ?, physical_barcode_id = ?, "
+        "physical_barcode_skip_reason = ?, huid = ? WHERE email = ?",
+        (barcode_id, physical_barcode_id or None, skip_reason or None, huid, email),
     )
     db.commit()
 
