@@ -416,6 +416,23 @@ def attendance():
 
     barcodes_registered = [b for b in (barcode_id, physical_barcode_id) if b]
 
+    # Section orphan count: barcodes in attendance for this course that
+    # aren't registered to any student (via barcode_id or physical_barcode_id).
+    section_orphan_count = db.execute(
+        "SELECT COUNT(DISTINCT a.student_id) FROM attendance a "
+        "WHERE a.course_code = ? "
+        "AND a.student_id NOT IN ("
+        "  SELECT barcode_id FROM student "
+        "    WHERE course_code = ? AND barcode_id IS NOT NULL AND barcode_id != '' "
+        "  UNION "
+        "  SELECT physical_barcode_id FROM student "
+        "    WHERE course_code = ? AND physical_barcode_id IS NOT NULL AND physical_barcode_id != ''"
+        ")",
+        (course_code, course_code, course_code),
+    ).fetchone()[0]
+
+    has_physical_barcode = bool(physical_barcode_id)
+
     return jsonify({
         "student_name": f"{student['first_name']} {student['last_name']}",
         "course_code": course_code,
@@ -428,6 +445,8 @@ def attendance():
         "unexcused_count": max(0, unexcused_count),
         "effective_rate": round(effective_rate, 4),
         "dates": dates,
+        "section_orphan_count": section_orphan_count,
+        "has_physical_barcode": has_physical_barcode,
     })
 
 

@@ -519,5 +519,77 @@ class ClaimPhysicalBarcodeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
 
+class AttendanceResponseFieldsTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+        self.client = self.app_mod.app.test_client()
+        # Reuse seed from ClaimPhysicalBarcodeTest -- copy-paste here
+        course = "INFO-335-04"
+        students = [
+            {"email": f"s{i}@bison.howard.edu", "first_name": f"S{i}",
+             "last_name": "T", "course_code": course, "course_name": "POM",
+             "barcode_id": f"11111111111{i:02d}", "physical_barcode_id": None,
+             "huid": f"@0000000{i}"}
+            for i in range(5)
+        ] + [
+            {"email": "charrikka@bison.howard.edu", "first_name": "Charrikka",
+             "last_name": "Gordon", "course_code": course, "course_name": "POM",
+             "barcode_id": "7142851387095", "physical_barcode_id": None,
+             "huid": "@03109999"},
+        ]
+        attendance = []
+        for d in ("2026-02-03", "2026-02-05", "2026-02-10"):
+            for i in range(5):
+                attendance.append({
+                    "student_id": f"11111111111{i:02d}", "course_code": course,
+                    "scan_date": d, "scan_timestamp": f"{d}T19:11:32Z",
+                })
+            attendance.append({
+                "student_id": "9988776655", "course_code": course,
+                "scan_date": d, "scan_timestamp": f"{d}T19:15:00Z",
+            })
+        self.client.post("/sync/push", json={
+            "students": students, "attendance": attendance,
+        }, headers={"X-Sync-Key": "testkey"})
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+
+    def test_response_includes_has_physical_barcode_false(self):
+        r = self.client.get("/attendance",
+                            query_string={"email": "charrikka@bison.howard.edu"})
+        body = r.get_json()
+        self.assertIn("has_physical_barcode", body)
+        self.assertFalse(body["has_physical_barcode"])
+
+    def test_response_includes_section_orphan_count(self):
+        r = self.client.get("/attendance",
+                            query_string={"email": "charrikka@bison.howard.edu"})
+        body = r.get_json()
+        self.assertIn("section_orphan_count", body)
+        # 9988776655 is the only orphan (5 registered students + Charrikka's
+        # virtual 7142851387095 have no scans under that student_id)
+        self.assertEqual(body["section_orphan_count"], 1)
+
+    def test_has_physical_barcode_true_after_claim(self):
+        self.client.post("/claim-physical-barcode", json={
+            "email": "charrikka@bison.howard.edu",
+            "physical_barcode_id": "9988776655",
+        })
+        r = self.client.get("/attendance",
+                            query_string={"email": "charrikka@bison.howard.edu"})
+        body = r.get_json()
+        self.assertTrue(body["has_physical_barcode"])
+        # Once linked, orphan count for this section drops to 0
+        self.assertEqual(body["section_orphan_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
