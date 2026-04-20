@@ -12,7 +12,13 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
   const [huid, setHuid] = useState('');
   const [barcodeId, setBarcodeId] = useState('');
   const [physicalBarcodeId, setPhysicalBarcodeId] = useState('');
-  const [showPhysicalScan, setShowPhysicalScan] = useState(false);
+  const [skipReason, setSkipReason] = useState('');
+  const [skipReasonOther, setSkipReasonOther] = useState('');
+
+  const effectiveSkipReason = skipReason === 'other' ? skipReasonOther.trim() : skipReason;
+  const physicalProvided = !!physicalBarcodeId;
+  const skipProvided = !!effectiveSkipReason;
+
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [lookupEmail, setLookupEmail] = useState('');
@@ -31,6 +37,7 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
           huid: huid.trim(),
           barcode_id: barcodeId.trim(),
           physical_barcode_id: physicalBarcodeId.trim() || undefined,
+          physical_barcode_skip_reason: effectiveSkipReason || undefined,
         }),
       });
 
@@ -120,21 +127,11 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
           )}
         </div>
 
-        {/* Optional physical card scan */}
-        {barcodeId && !showPhysicalScan && (
-          <button
-            type="button"
-            onClick={() => setShowPhysicalScan(true)}
-            className="w-full text-sm text-gray-500 hover:text-blue-600 py-2"
-          >
-            + Add physical Bison card (optional -- only if you've used one in class)
-          </button>
-        )}
-
-        {showPhysicalScan && (
+        {/* Physical card scan */}
+        {barcodeId && (
           <div>
             <label className="block text-base font-medium text-gray-700 mb-1">
-              Physical Card Barcode (optional)
+              Physical Card Barcode
             </label>
             {physicalBarcodeId ? (
               <div className="flex items-center justify-between bg-green-50 border-2 border-green-300 rounded-xl px-4 py-3">
@@ -154,13 +151,44 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
                   scannerId="barcode-reader-physical"
                   onScan={setPhysicalBarcodeId}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPhysicalScan(false)}
-                  className="w-full text-sm text-gray-500 hover:text-gray-700 py-1"
-                >
-                  Skip
-                </button>
+              </div>
+            )}
+
+            {!physicalBarcodeId && (
+              <div className="border-t pt-3 mt-2">
+                <details>
+                  <summary className="cursor-pointer text-sm text-gray-600 hover:text-gray-800">
+                    I can't scan my physical card
+                  </summary>
+                  <div className="mt-3 space-y-2 pl-2">
+                    {[
+                      { v: 'no-physical-card', label: "I don't have a physical card" },
+                      { v: 'privacy-screen', label: 'Privacy screen blocks scanning' },
+                      { v: 'forgot-today', label: 'Forgot card today' },
+                      { v: 'other', label: 'Other' },
+                    ].map(opt => (
+                      <label key={opt.v} className="flex items-center gap-2 text-base">
+                        <input
+                          type="radio"
+                          name="skip-reason"
+                          value={opt.v}
+                          checked={skipReason === opt.v}
+                          onChange={e => setSkipReason(e.target.value)}
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                    {skipReason === 'other' && (
+                      <input
+                        type="text"
+                        value={skipReasonOther}
+                        onChange={e => setSkipReasonOther(e.target.value)}
+                        placeholder="Tell us why"
+                        className="w-full px-3 py-2 text-base border-2 border-gray-300 rounded-xl"
+                      />
+                    )}
+                  </div>
+                </details>
               </div>
             )}
           </div>
@@ -174,9 +202,9 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
 
         <button
           type="submit"
-          disabled={submitting || !email || !huid || !barcodeId}
+          disabled={submitting || !email || !huid || !barcodeId || (!physicalProvided && !skipProvided)}
           className={`w-full py-3 text-lg font-semibold rounded-xl transition-all ${
-            submitting || !email || !huid || !barcodeId
+            submitting || !email || !huid || !barcodeId || (!physicalProvided && !skipProvided)
               ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
               : 'bg-blue-600 hover:bg-blue-700 text-white'
           }`}
