@@ -212,5 +212,123 @@ class MigrationBackfillTest(unittest.TestCase):
             self.assertEqual(rows, rows2)
 
 
+class AdminLinkPhysicalTest(unittest.TestCase):
+    """POST /admin/link-physical sets physical_barcode_id for all student rows
+    with the given email, returns attendance delta."""
+
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+        self.client = self.app_mod.app.test_client()
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+
+    def _seed_course_with_orphan_scans(self):
+        """5 registered + 1 target student. The target has 3 physical-card
+        scans in the attendance table under barcode '9988776655' that are
+        currently orphaned (not linked to her student row)."""
+        course = "INFO-335-04"
+        students = [
+            {"email": f"s{i}@bison.howard.edu", "first_name": f"S{i}",
+             "last_name": "T", "course_code": course, "course_name": "POM",
+             "barcode_id": f"11111111111{i:02d}", "physical_barcode_id": None,
+             "huid": f"@0000000{i}"}
+            for i in range(5)
+        ] + [
+            {"email": "charrikka@bison.howard.edu", "first_name": "Charrikka",
+             "last_name": "Gordon", "course_code": course, "course_name": "POM",
+             "barcode_id": "7142851387095", "physical_barcode_id": None,
+             "huid": "@03109999"},
+        ]
+        attendance = []
+        for d in ("2026-02-03", "2026-02-05", "2026-02-10"):
+            for i in range(5):
+                attendance.append({
+                    "student_id": f"11111111111{i:02d}", "course_code": course,
+                    "scan_date": d, "scan_timestamp": f"{d}T19:11:32Z",
+                })
+            attendance.append({
+                "student_id": "9988776655", "course_code": course,
+                "scan_date": d, "scan_timestamp": f"{d}T19:15:00Z",
+            })
+        self.client.post("/sync/push", json={
+            "students": students, "attendance": attendance,
+        }, headers={"X-Sync-Key": "testkey"})
+
+    def test_links_physical_barcode_and_returns_delta(self):
+        self._seed_course_with_orphan_scans()
+        r = self.client.post(
+            "/admin/link-physical",
+            json={"email": "charrikka@bison.howard.edu",
+                  "physical_barcode_id": "9988776655"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["attendance_delta"]["absent_before"], 3)
+        self.assertEqual(body["attendance_delta"]["absent_after"], 0)
+
+        # /attendance now reflects the link
+        r = self.client.get(
+            "/attendance",
+            query_string={"email": "charrikka@bison.howard.edu"},
+        )
+        body = r.get_json()
+        self.assertEqual(body["sessions_attended"], 3)
+
+    def test_rejects_missing_auth(self):
+        self._seed_course_with_orphan_scans()
+        r = self.client.post(
+            "/admin/link-physical",
+            json={"email": "charrikka@bison.howard.edu",
+                  "physical_barcode_id": "9988776655"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_rejects_bad_auth(self):
+        self._seed_course_with_orphan_scans()
+        r = self.client.post(
+            "/admin/link-physical",
+            json={"email": "charrikka@bison.howard.edu",
+                  "physical_barcode_id": "9988776655"},
+            headers={"X-Sync-Key": "wrong"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_idempotent(self):
+        self._seed_course_with_orphan_scans()
+        for _ in range(2):
+            r = self.client.post(
+                "/admin/link-physical",
+                json={"email": "charrikka@bison.howard.edu",
+                      "physical_barcode_id": "9988776655"},
+                headers={"X-Sync-Key": "testkey"},
+            )
+            self.assertEqual(r.status_code, 200)
+        r = self.client.get(
+            "/attendance",
+            query_string={"email": "charrikka@bison.howard.edu"},
+        )
+        self.assertEqual(r.get_json()["sessions_attended"], 3)
+
+    def test_404_on_unknown_email(self):
+        self._seed_course_with_orphan_scans()
+        r = self.client.post(
+            "/admin/link-physical",
+            json={"email": "nobody@bison.howard.edu",
+                  "physical_barcode_id": "9988776655"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

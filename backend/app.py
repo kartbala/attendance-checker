@@ -46,6 +46,51 @@ def normalize_barcode(barcode):
     stripped = barcode.lstrip("0")
     return stripped or "0"
 
+def _compute_attendance_delta(db, email, course_code_filter=None):
+    """Return {absent_before, absent_after} for a given email, across all
+    their courses or a single course if specified. 'before' reflects the
+    state with the student's currently-stored barcodes; 'after' would be
+    the same if the caller commits no changes, so this helper is meant to
+    be called twice -- once before the write, once after -- with the diff
+    computed by the caller. See usage below."""
+    rows = db.execute(
+        "SELECT course_code, barcode_id, physical_barcode_id FROM student "
+        "WHERE email = ?" + (" AND course_code = ?" if course_code_filter else ""),
+        (email, course_code_filter) if course_code_filter else (email,),
+    ).fetchall()
+    total = 0
+    for row in rows:
+        barcodes = list({
+            normalize_barcode(b) for b in (row["barcode_id"], row["physical_barcode_id"])
+            if b
+        })
+        sessions = db.execute(
+            "SELECT scan_date, COUNT(DISTINCT student_id) as cnt FROM attendance "
+            "WHERE course_code = ? GROUP BY scan_date HAVING cnt >= 5",
+            (row["course_code"],),
+        ).fetchall()
+        session_dates = {r["scan_date"] for r in sessions}
+        if not barcodes or not session_dates:
+            total += len(session_dates)
+            continue
+        placeholders = ",".join("?" * len(barcodes))
+        attended = db.execute(
+            f"SELECT DISTINCT scan_date FROM attendance "
+            f"WHERE student_id IN ({placeholders}) AND course_code = ? "
+            f"AND scan_date IN ({','.join('?' * len(session_dates))})",
+            barcodes + [row["course_code"]] + list(session_dates),
+        ).fetchall()
+        attended_dates = {r["scan_date"] for r in attended}
+        excused = db.execute(
+            "SELECT absence_date FROM excused_absence "
+            "WHERE student_email = ? AND course_code = ?",
+            (email, row["course_code"]),
+        ).fetchall()
+        excused_dates = {r[0] for r in excused}
+        total += len(session_dates - attended_dates - excused_dates)
+    return total
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS student (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -536,6 +581,44 @@ def sync_pull():
             {"email": r["email"], "barcode_id": r["barcode_id"], "physical_barcode_id": r["physical_barcode_id"], "huid": r["huid"]}
             for r in rows
         ]
+    })
+
+
+@app.route("/admin/link-physical", methods=["POST"])
+def admin_link_physical():
+    auth_err = require_sync_key()
+    if auth_err:
+        return auth_err
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip().lower()
+    physical = normalize_barcode((data.get("physical_barcode_id") or "").strip())
+    if not email or not physical:
+        return jsonify({"error": "email and physical_barcode_id required"}), 400
+
+    db = get_db()
+    existing = db.execute(
+        "SELECT id FROM student WHERE email = ?", (email,)
+    ).fetchall()
+    if not existing:
+        return jsonify({"error": "email not found"}), 404
+
+    absent_before = _compute_attendance_delta(db, email)
+    db.execute(
+        "UPDATE student SET physical_barcode_id = ? WHERE email = ?",
+        (physical, email),
+    )
+    db.commit()
+    absent_after = _compute_attendance_delta(db, email)
+
+    return jsonify({
+        "success": True,
+        "email": email,
+        "physical_barcode_id": physical,
+        "rows_updated": len(existing),
+        "attendance_delta": {
+            "absent_before": absent_before,
+            "absent_after": absent_after,
+        },
     })
 
 
