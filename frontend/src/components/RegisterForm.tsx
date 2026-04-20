@@ -113,7 +113,7 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
               <span className="text-lg font-mono text-green-800">{barcodeId}</span>
               <button
                 type="button"
-                onClick={() => setBarcodeId('')}
+                onClick={() => { setBarcodeId(''); setSkipReason(''); setSkipReasonOther(''); }}
                 className="text-green-600 hover:text-green-800 text-sm font-medium"
               >
                 Rescan
@@ -167,10 +167,10 @@ export function RegisterForm({ onRegistered, onLookup, apiUrl }: RegisterFormPro
                       { v: 'forgot-today', label: 'Forgot card today' },
                       { v: 'other', label: 'Other' },
                     ].map(opt => (
-                      <label key={opt.v} className="flex items-center gap-2 text-base">
+                      <label key={opt.v} className="flex items-center gap-2 text-base min-h-[44px]">
                         <input
                           type="radio"
-                          name="skip-reason"
+                          name="physical-barcode-skip-reason"
                           value={opt.v}
                           checked={skipReason === opt.v}
                           onChange={e => setSkipReason(e.target.value)}
