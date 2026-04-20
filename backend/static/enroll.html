@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bulk Enroll -- Physical Barcodes</title>
+<style>
+  body { font-family: system-ui, sans-serif; font-size: 20px; max-width: 800px;
+         margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 32px; }
+  form { background: #f8f8f8; padding: 1.5rem; border-radius: 12px;
+         border: 2px solid #ddd; }
+  label { display: block; margin: 0.8rem 0 0.3rem; font-weight: 600; }
+  input { width: 100%; padding: 0.6rem; font-size: 20px;
+          border: 2px solid #ccc; border-radius: 6px; font-family: monospace; }
+  input:focus { border-color: #2563eb; outline: none; }
+  button { margin-top: 1rem; padding: 0.7rem 1.5rem; font-size: 18px;
+           background: #2563eb; color: white; border: 0; border-radius: 6px; cursor: pointer; }
+  #log { margin-top: 2rem; }
+  .entry { padding: 0.5rem 0.8rem; margin: 0.3rem 0; border-radius: 6px;
+           font-family: monospace; font-size: 16px; }
+  .ok { background: #e8f5e9; color: #1b5e20; }
+  .err { background: #ffebee; color: #b71c1c; }
+  #auth-badge { padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 14px;
+                display: inline-block; margin-bottom: 1rem; }
+  .auth-ok { background: #c8e6c9; color: #1b5e20; }
+  .auth-no { background: #ffcdd2; color: #b71c1c; }
+</style>
+</head>
+<body>
+<h1>Bulk Enroll -- Physical Barcodes</h1>
+<div id="auth-badge" class="auth-no">No admin key in URL. Add <code>?key=YOUR_SYNC_KEY</code>.</div>
+<form id="enroll-form">
+  <label for="email">Bison email</label>
+  <input type="email" id="email" name="email" autofocus autocomplete="off"
+         placeholder="student@bison.howard.edu" required>
+  <label for="barcode">Physical card barcode (scan now)</label>
+  <input type="text" id="barcode" name="barcode" autocomplete="off"
+         placeholder="(scan)" required>
+  <button type="submit">Save and next</button>
+</form>
+<div id="log"></div>
+
+<script>
+(function() {
+  const params = new URLSearchParams(location.search);
+  const key = params.get('key');
+  const badge = document.getElementById('auth-badge');
+  if (key) {
+    badge.className = 'auth-ok';
+    badge.textContent = 'Admin key loaded. Ready to enroll.';
+  }
+
+  const form = document.getElementById('enroll-form');
+  const emailInput = document.getElementById('email');
+  const barcodeInput = document.getElementById('barcode');
+  const log = document.getElementById('log');
+
+  // USB scanners typically end input with \r (Enter), which submits the form.
+  // That's the desired flow once both fields are filled.
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!key) {
+      addEntry('err', 'No admin key -- add ?key=... to URL');
+      return;
+    }
+    const email = emailInput.value.trim().toLowerCase();
+    const barcode = barcodeInput.value.trim();
+    if (!email || !barcode) return;
+
+    try {
+      const r = await fetch('/admin/link-physical', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Sync-Key': key },
+        body: JSON.stringify({ email: email, physical_barcode_id: barcode }),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        addEntry('err', `${email} -- ${j.error || r.status}`);
+      } else {
+        const d = j.attendance_delta;
+        const delta = d.absent_before - d.absent_after;
+        addEntry('ok',
+          `${email} -- barcode ${barcode} linked. ` +
+          (delta > 0 ? `+${delta} scans now counted (absences ${d.absent_before} -> ${d.absent_after})`
+                     : `no retroactive change`));
+        emailInput.value = '';
+        barcodeInput.value = '';
+        emailInput.focus();
+      }
+    } catch (err) {
+      addEntry('err', `${email} -- request failed: ${err}`);
+    }
+  });
+
+  function addEntry(cls, msg) {
+    const div = document.createElement('div');
+    div.className = 'entry ' + cls;
+    const ts = new Date().toLocaleTimeString();
+    div.textContent = `[${ts}] ${msg}`;
+    log.insertBefore(div, log.firstChild);
+    // Keep only the last 30
+    while (log.children.length > 30) log.removeChild(log.lastChild);
+  }
+
+  // After email is typed, Tab/Enter moves focus to barcode.
+  emailInput.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === 'Tab') && emailInput.value.trim()) {
+      e.preventDefault();
+      barcodeInput.focus();
+    }
+  });
+})();
+</script>
+</body>
+</html>
