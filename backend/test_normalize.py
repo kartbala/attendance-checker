@@ -591,5 +591,30 @@ class AttendanceResponseFieldsTest(unittest.TestCase):
         self.assertEqual(body["section_orphan_count"], 0)
 
 
+class DebugClaimsRouteTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+        self.client = self.app_mod.app.test_client()
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+
+    def test_requires_key(self):
+        r = self.client.get("/debug/claims")
+        self.assertEqual(r.status_code, 401)
+
+    def test_renders_table_with_key(self):
+        r = self.client.get("/debug/claims", query_string={"key": "testkey"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"Last 50 claim attempts", r.data)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

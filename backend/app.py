@@ -604,6 +604,44 @@ document.getElementById('link-form').addEventListener('submit', async (e) => {{
     return "".join(out)
 
 
+@app.route("/debug/claims")
+def debug_claims():
+    key = request.args.get("key", "")
+    if key != SYNC_API_KEY:
+        return ("<p style='font-family:system-ui;padding:2rem'>"
+                "Add <code>?key=...</code></p>"), 401
+
+    db = get_db()
+    rows = db.execute(
+        "SELECT attempted_at, email, course_code, submitted_barcode, "
+        "variants_tried, matched_barcode, absent_before, absent_after "
+        "FROM claim_log ORDER BY id DESC LIMIT 50"
+    ).fetchall()
+
+    html = [
+        "<!doctype html><html><head><meta charset='utf-8'><title>Claim log</title>",
+        "<style>body{font-family:system-ui;font-size:15px;max-width:1400px;margin:1rem auto;padding:0 1rem}",
+        "table{border-collapse:collapse;width:100%} th,td{padding:0.4rem 0.6rem;border-bottom:1px solid #ddd;text-align:left;font-family:monospace;font-size:13px}",
+        "th{background:#f3f3f3}.match{color:#0a7a0a}.nomatch{color:#b00020}.delta{font-weight:600}</style>",
+        "</head><body><h1>Last 50 claim attempts</h1>",
+        "<table><thead><tr><th>When</th><th>Email</th><th>Course</th><th>Submitted</th>",
+        "<th>Variants</th><th>Matched</th><th>Delta</th></tr></thead><tbody>",
+    ]
+    for r in rows:
+        matched_cls = "match" if r["matched_barcode"] else "nomatch"
+        delta = (r["absent_before"] or 0) - (r["absent_after"] or 0)
+        html.append(
+            f"<tr><td>{r['attempted_at']}</td><td>{r['email']}</td>"
+            f"<td>{r['course_code']}</td><td>{r['submitted_barcode']}</td>"
+            f"<td>{r['variants_tried']}</td>"
+            f"<td class='{matched_cls}'>{r['matched_barcode'] or '--'}</td>"
+            f"<td class='delta'>{r['absent_before']} -> {r['absent_after']} "
+            f"({'+' if delta > 0 else ''}{delta})</td></tr>"
+        )
+    html.append("</tbody></table></body></html>")
+    return "".join(html)
+
+
 @app.route("/enroll")
 def enroll_page():
     # Static file; admin key is read client-side from ?key=... and sent in
