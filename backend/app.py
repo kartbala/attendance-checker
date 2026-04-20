@@ -469,6 +469,11 @@ def debug_view():
         return f"<p style='font-family:system-ui;font-size:18px;padding:2rem'>Email <b>{email}</b> not found.</p>", 404
 
     name = f"{students[0]['first_name']} {students[0]['last_name']}"
+    # JS-safe literal for the inline <script> body below. json.dumps
+    # handles quoting/escaping; the .replace closes the </script> vector
+    # (Python 3.11 f-strings can't contain backslashes in expressions,
+    # so we precompute here).
+    email_js = json.dumps(email).replace("</", "<\\/")
 
     out = [
         "<!doctype html><html><head><meta charset='utf-8'><title>Debug -- ", name, "</title>",
@@ -504,7 +509,7 @@ document.getElementById('link-form').addEventListener('submit', async (e) => {{
         'X-Sync-Key': f.key.value,
       }},
       body: JSON.stringify({{
-        email: {json.dumps(email).replace("</", "<\\/")},
+        email: {email_js},
         physical_barcode_id: f.barcode.value.trim(),
       }}),
     }});
