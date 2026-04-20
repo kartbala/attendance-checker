@@ -710,7 +710,9 @@ class RegisterWithSkipReasonTest(unittest.TestCase):
             "email": "s1@bison.howard.edu", "huid": "@01234567",
             "barcode_id": "123456",
         })
+        body = r.get_json()
         self.assertEqual(r.status_code, 400)
+        self.assertTrue(any("physical_barcode_skip_reason" in d for d in body.get("details", [])))
 
     def test_accepts_with_physical(self):
         r = self.client.post("/register", json={
@@ -728,10 +730,11 @@ class RegisterWithSkipReasonTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT physical_barcode_skip_reason FROM student "
-                "WHERE email = ?", ("s1@bison.howard.edu",)
+                "SELECT physical_barcode_skip_reason, physical_barcode_id "
+                "FROM student WHERE email = ?", ("s1@bison.howard.edu",)
             ).fetchone()
         self.assertEqual(row[0], "privacy-screen")
+        self.assertIsNone(row[1])
 
 
 if __name__ == "__main__":
