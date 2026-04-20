@@ -46,6 +46,31 @@ def normalize_barcode(barcode):
     stripped = barcode.lstrip("0")
     return stripped or "0"
 
+
+def normalize_barcode_variants(raw):
+    """Return the set of plausible forms of a barcode for fuzzy-match at
+    claim time. Strictly more permissive than normalize_barcode() -- used
+    only against orphan scans in a specific course, so false positives are
+    bounded by 'is this number actually in the attendance table for your
+    class.' Variants:
+      1. strip non-digits, strip leading zeros (canonical form)
+      2. canonical minus last digit (check-digit drift)
+      3. canonical minus first digit (symbology-prefix drift)
+    Variants 2 and 3 are skipped when they'd shrink the barcode below 3
+    chars. Returns a set (order doesn't matter, dedupe is free)."""
+    if not raw:
+        return set()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return set()
+    canonical = digits.lstrip("0") or "0"
+    variants = {canonical}
+    if len(canonical) >= 4:
+        variants.add(canonical[:-1])
+        variants.add(canonical[1:])
+    return variants
+
+
 def _compute_attendance_delta(db, email, course_code_filter=None):
     """Return {absent_before, absent_after} for a given email, across all
     their courses or a single course if specified. 'before' reflects the

@@ -378,5 +378,41 @@ class ClaimLogSchemaTest(unittest.TestCase):
         self.assertIn("absent_after", cols)
 
 
+class NormalizeVariantsTest(unittest.TestCase):
+    def setUp(self):
+        import app
+        self.variants = app.normalize_barcode_variants
+
+    def test_strips_non_digits(self):
+        v = self.variants("71-42851*387095")
+        self.assertIn("7142851387095", v)
+
+    def test_strips_leading_zeros(self):
+        v = self.variants("007142851387095")
+        self.assertIn("7142851387095", v)
+
+    def test_includes_check_digit_variant(self):
+        v = self.variants("7142851387095")
+        self.assertIn("714285138709", v)  # trailing digit stripped
+
+    def test_includes_symbology_prefix_variant(self):
+        v = self.variants("7142851387095")
+        self.assertIn("142851387095", v)  # leading digit stripped
+
+    def test_handles_none_and_empty(self):
+        self.assertEqual(self.variants(None), set())
+        self.assertEqual(self.variants(""), set())
+        self.assertEqual(self.variants("---"), set())
+
+    def test_short_barcode_skips_trim_variants(self):
+        """For very short inputs, trim variants would reduce to <3 chars --
+        too ambiguous to match safely. Skip them."""
+        v = self.variants("12")
+        self.assertEqual(v, {"12"})
+
+    def test_returns_set(self):
+        self.assertIsInstance(self.variants("7142851387095"), set)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
