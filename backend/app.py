@@ -73,12 +73,12 @@ def normalize_barcode_variants(raw):
 
 
 def _compute_attendance_delta(db, email, course_code_filter=None):
-    """Return {absent_before, absent_after} for a given email, across all
-    their courses or a single course if specified. 'before' reflects the
-    state with the student's currently-stored barcodes; 'after' would be
-    the same if the caller commits no changes, so this helper is meant to
-    be called twice -- once before the write, once after -- with the diff
-    computed by the caller. See usage below."""
+    """Return the total unexcused-absence count for this email's courses
+    at the moment of call (int). Callers invoke this twice -- before and
+    after writing student.physical_barcode_id -- and compute the delta
+    themselves. Counts only sessions with >= 5 scans (the session-validity
+    threshold), subtracts the student's own scans (under any of their
+    barcodes), subtracts excused absences."""
     rows = db.execute(
         "SELECT course_code, barcode_id, physical_barcode_id FROM student "
         "WHERE email = ?" + (" AND course_code = ?" if course_code_filter else ""),
@@ -504,7 +504,7 @@ document.getElementById('link-form').addEventListener('submit', async (e) => {{
         'X-Sync-Key': f.key.value,
       }},
       body: JSON.stringify({{
-        email: {email!r},
+        email: {json.dumps(email)},
         physical_barcode_id: f.barcode.value.trim(),
       }}),
     }});
