@@ -504,7 +504,7 @@ document.getElementById('link-form').addEventListener('submit', async (e) => {{
         'X-Sync-Key': f.key.value,
       }},
       body: JSON.stringify({{
-        email: {json.dumps(email)},
+        email: {json.dumps(email).replace("</", "<\\/")},
         physical_barcode_id: f.barcode.value.trim(),
       }}),
     }});
