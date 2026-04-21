@@ -879,6 +879,51 @@ class RosterTest(unittest.TestCase):
         self.assertIn("Virtual only: 1", body)
         self.assertIn("Unregistered: 1", body)
 
+    def test_last_scan_column_shows_most_recent_scan_per_row(self):
+        # Seed attendance for the virtual-only student across 3 dates;
+        # roster should surface the max timestamp.
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO attendance (student_id, course_code, scan_date, "
+                "scan_timestamp) VALUES (?,?,?,?)",
+                [
+                    ("100003", "INFO-335-04", "2026-04-01", "2026-04-01T18:00:00Z"),
+                    ("100003", "INFO-335-04", "2026-04-08", "2026-04-08T18:05:00Z"),
+                    ("100003", "INFO-335-04", "2026-04-15", "2026-04-15T18:10:00Z"),
+                ],
+            )
+            conn.commit()
+        r = self.client.get("/admin/roster?key=testkey")
+        self.assertEqual(r.status_code, 200)
+        body = r.data.decode()
+        # format_scan_time_et renders '2026-04-15T18:10:00Z' as
+        # "Wed Apr 15, 1:10:00 PM ET" (subtracts 5h per the helper's contract).
+        self.assertIn("Wed Apr 15, 1:10:00 PM ET", body)
+        # Column header present
+        self.assertIn("<th>Last scan</th>", body)
+        # Students with no scans render "--"
+        # (unreg has no virtual barcode so the row's Last scan is '--')
+        self.assertIn("<td>unreg@bison.howard.edu</td>", body)
+
+    def test_last_scan_aggregates_across_both_barcodes(self):
+        # Physical student has two barcodes: virtual 100001, physical 200001.
+        # A newer scan on the physical should win over an older virtual scan.
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO attendance (student_id, course_code, scan_date, "
+                "scan_timestamp) VALUES (?,?,?,?)",
+                [
+                    ("100001", "INFO-335-04", "2026-04-01", "2026-04-01T18:00:00Z"),
+                    ("200001", "INFO-335-04", "2026-04-15", "2026-04-15T18:00:00Z"),
+                ],
+            )
+            conn.commit()
+        r = self.client.get("/admin/roster?key=testkey")
+        body = r.data.decode()
+        # Most recent scan (physical barcode on 4/15) should show, not the older virtual one.
+        self.assertIn("Wed Apr 15, 1:00:00 PM ET", body)
+        self.assertNotIn("Wed Apr 1, 1:00:00 PM ET", body)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

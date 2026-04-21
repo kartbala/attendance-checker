@@ -674,6 +674,16 @@ def admin_roster():
         "FROM student ORDER BY course_code, last_name, first_name"
     ).fetchall()
 
+    # Pre-aggregate last scan per (barcode, course_code). Single query
+    # instead of N+1. Attendance.student_id holds the scanned barcode.
+    last_scans = {
+        (r["student_id"], r["course_code"]): r["last_scan"]
+        for r in db.execute(
+            "SELECT student_id, course_code, MAX(scan_timestamp) AS last_scan "
+            "FROM attendance GROUP BY student_id, course_code"
+        ).fetchall()
+    }
+
     # Compute status for each row and summary counts
     n_physical = 0
     n_skipped = 0
@@ -705,6 +715,12 @@ def admin_roster():
             status_cls = "status-unreg"
             n_unreg += 1
 
+        # Most recent scan across either barcode for this student+course.
+        bcs = [normalize_barcode(b) for b in (virt, phys) if b]
+        stamps = [last_scans.get((b, r["course_code"])) for b in bcs]
+        last_scan = max((s for s in stamps if s), default=None)
+        last_scan_str = format_scan_time_et(last_scan) if last_scan else "--"
+
         name = f"{r['last_name']}, {r['first_name']}"
         table_rows.append(
             f"<tr>"
@@ -715,6 +731,7 @@ def admin_roster():
             f"<td>{virt or '--'}</td>"
             f"<td>{phys or '--'}</td>"
             f"<td>{skip_safe or '--'}</td>"
+            f"<td>{last_scan_str}</td>"
             f"<td class='{status_cls}'>{status}</td>"
             f"</tr>"
         )
@@ -742,7 +759,8 @@ def admin_roster():
         f"Unregistered: {n_unreg}</div>",
         "<table><thead><tr>",
         "<th>Email</th><th>Name</th><th>Course</th><th>HUID</th>",
-        "<th>Virtual barcode</th><th>Physical barcode</th><th>Skip reason</th><th>Status</th>",
+        "<th>Virtual barcode</th><th>Physical barcode</th><th>Skip reason</th>",
+        "<th>Last scan</th><th>Status</th>",
         "</tr></thead><tbody>",
     ]
     page.extend(table_rows)
