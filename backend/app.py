@@ -659,6 +659,93 @@ def debug_claims():
     return "".join(html)
 
 
+@app.route("/admin/roster")
+def admin_roster():
+    key = request.args.get("key", "")
+    if key != SYNC_API_KEY:
+        return ("<p style='font-family:system-ui;padding:2rem'>"
+                "Add <code>?key=...</code></p>"), 401
+
+    db = get_db()
+    rows = db.execute(
+        "SELECT email, first_name, last_name, course_code, huid, "
+        "barcode_id, physical_barcode_id, physical_barcode_skip_reason "
+        "FROM student ORDER BY course_code, last_name, first_name"
+    ).fetchall()
+
+    # Compute status for each row and summary counts
+    n_physical = 0
+    n_skipped = 0
+    n_virtual = 0
+    n_unreg = 0
+
+    table_rows = []
+    for r in rows:
+        phys = r["physical_barcode_id"]
+        skip = r["physical_barcode_skip_reason"]
+        virt = r["barcode_id"]
+        if phys:
+            status = "physical"
+            status_cls = "s-physical"
+            n_physical += 1
+        elif skip:
+            status = f"skipped: {skip}"
+            status_cls = "s-skipped"
+            n_skipped += 1
+        elif virt:
+            status = "virtual only"
+            status_cls = "s-virtual"
+            n_virtual += 1
+        else:
+            status = "unregistered"
+            status_cls = "s-unreg"
+            n_unreg += 1
+
+        name = f"{r['last_name']}, {r['first_name']}"
+        table_rows.append(
+            f"<tr>"
+            f"<td>{r['email']}</td>"
+            f"<td>{name}</td>"
+            f"<td>{r['course_code']}</td>"
+            f"<td>{r['huid'] or '--'}</td>"
+            f"<td>{virt or '--'}</td>"
+            f"<td>{phys or '--'}</td>"
+            f"<td>{skip or '--'}</td>"
+            f"<td class='{status_cls}'>{status}</td>"
+            f"</tr>"
+        )
+
+    total = len(rows)
+    html = [
+        "<!doctype html><html><head><meta charset='utf-8'><title>Student Roster</title>",
+        "<style>",
+        "body{font-family:system-ui;font-size:15px;max-width:1500px;margin:1rem auto;padding:0 1rem}",
+        "table{border-collapse:collapse;width:100%}",
+        "th,td{padding:0.4rem 0.6rem;border-bottom:1px solid #ddd;text-align:left;"
+        "font-family:monospace;font-size:13px}",
+        "th{background:#f3f3f3}",
+        ".summary{margin:1rem 0;font-size:15px}",
+        ".s-physical{color:#0a7a0a;font-weight:600}",
+        ".s-skipped{color:#b36b00;font-weight:600}",
+        ".s-virtual{color:#555}",
+        ".s-unreg{color:#b00020;font-weight:600}",
+        "</style></head><body>",
+        "<h1>Student Roster</h1>",
+        f"<div class='summary'>Total enrolled: {total} &nbsp;|&nbsp; "
+        f"Physical: {n_physical} &nbsp;|&nbsp; "
+        f"Skipped: {n_skipped} &nbsp;|&nbsp; "
+        f"Virtual only: {n_virtual} &nbsp;|&nbsp; "
+        f"Unregistered: {n_unreg}</div>",
+        "<table><thead><tr>",
+        "<th>Email</th><th>Name</th><th>Course</th><th>HUID</th>",
+        "<th>Virtual barcode</th><th>Physical barcode</th><th>Skip reason</th><th>Status</th>",
+        "</tr></thead><tbody>",
+    ]
+    html.extend(table_rows)
+    html.append("</tbody></table></body></html>")
+    return "".join(html)
+
+
 @app.route("/enroll")
 def enroll_page():
     # Static file; admin key is read client-side from ?key=... and sent in

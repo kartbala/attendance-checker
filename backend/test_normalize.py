@@ -783,5 +783,84 @@ class RegisterWithSkipReasonTest(unittest.TestCase):
         self.assertIsNone(row[1])
 
 
+class RosterTest(unittest.TestCase):
+    """GET /admin/roster returns an HTML table of all students with status."""
+
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+        self.client = self.app_mod.app.test_client()
+        # Seed students covering all four status cases via direct INSERT so we
+        # can control physical_barcode_skip_reason (sync/push drops that field).
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO student (email, first_name, last_name, course_code, course_name, "
+                "barcode_id, physical_barcode_id, physical_barcode_skip_reason, huid) VALUES "
+                "(?,?,?,?,?,?,?,?,?)",
+                [
+                    # physical: has physical_barcode_id
+                    ("physical@bison.howard.edu", "P", "Hys", "INFO-335-04", "POM",
+                     "100001", "200001", None, "@00000001"),
+                    # skipped: has skip_reason, no physical
+                    ("skipper@bison.howard.edu", "S", "Kip", "INFO-335-04", "POM",
+                     "100002", None, "privacy-screen", "@00000002"),
+                    # virtual only: has virtual barcode, no physical, no skip
+                    ("virtual@bison.howard.edu", "V", "Irt", "INFO-335-04", "POM",
+                     "100003", None, None, "@00000003"),
+                    # unregistered: no virtual barcode
+                    ("unreg@bison.howard.edu", "U", "Nreg", "INFO-335-04", "POM",
+                     None, None, None, None),
+                ],
+            )
+            conn.commit()
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+
+    def test_requires_key(self):
+        r = self.client.get("/admin/roster")
+        self.assertEqual(r.status_code, 401)
+
+    def test_wrong_key_rejected(self):
+        r = self.client.get("/admin/roster", query_string={"key": "wrongkey"})
+        self.assertEqual(r.status_code, 401)
+
+    def test_200_with_correct_key(self):
+        r = self.client.get("/admin/roster", query_string={"key": "testkey"})
+        self.assertEqual(r.status_code, 200)
+
+    def test_contains_all_emails(self):
+        r = self.client.get("/admin/roster", query_string={"key": "testkey"})
+        body = r.data
+        self.assertIn(b"physical@bison.howard.edu", body)
+        self.assertIn(b"skipper@bison.howard.edu", body)
+        self.assertIn(b"virtual@bison.howard.edu", body)
+        self.assertIn(b"unreg@bison.howard.edu", body)
+
+    def test_status_strings_present(self):
+        r = self.client.get("/admin/roster", query_string={"key": "testkey"})
+        body = r.data
+        self.assertIn(b"physical", body)
+        self.assertIn(b"skipped: privacy-screen", body)
+        self.assertIn(b"virtual only", body)
+        self.assertIn(b"unregistered", body)
+
+    def test_summary_counts(self):
+        r = self.client.get("/admin/roster", query_string={"key": "testkey"})
+        body = r.data.decode()
+        # Total enrolled: 4, Physical: 1, Skipped: 1, Virtual only: 1, Unregistered: 1
+        self.assertIn("Total enrolled: 4", body)
+        self.assertIn("Physical: 1", body)
+        self.assertIn("Skipped: 1", body)
+        self.assertIn("Virtual only: 1", body)
+        self.assertIn("Unregistered: 1", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
