@@ -776,6 +776,11 @@ def enroll_page():
     return app.send_static_file("enroll.html")
 
 
+@app.route("/enroll-virtual")
+def enroll_virtual_page():
+    return app.send_static_file("enroll-virtual.html")
+
+
 @app.route("/sync/push", methods=["POST"])
 def sync_push():
     auth_err = require_sync_key()
@@ -854,6 +859,30 @@ def sync_pull():
     })
 
 
+def _student_courses(db, email):
+    """Return list of distinct course_codes the student is enrolled in."""
+    return [r["course_code"] for r in db.execute(
+        "SELECT DISTINCT course_code FROM student WHERE email = ?",
+        (email,),
+    ).fetchall()]
+
+
+def _write_attendance_today(db, barcode, course_code):
+    """Insert an attendance row for today with the given barcode and course.
+    Called after a successful bulk-enroll link so the registration scan
+    also serves as the attendance scan for the current session. INSERT OR
+    IGNORE makes the call idempotent against the
+    UNIQUE(student_id, course_code, scan_date) constraint."""
+    now = datetime.utcnow()
+    db.execute(
+        "INSERT OR IGNORE INTO attendance "
+        "(student_id, course_code, scan_date, scan_timestamp) "
+        "VALUES (?, ?, ?, ?)",
+        (barcode, course_code, now.date().isoformat(),
+         now.strftime("%Y-%m-%dT%H:%M:%SZ")),
+    )
+
+
 @app.route("/admin/link-physical", methods=["POST"])
 def admin_link_physical():
     auth_err = require_sync_key()
@@ -862,6 +891,7 @@ def admin_link_physical():
     data = request.get_json() or {}
     email = (data.get("email") or "").strip().lower()
     physical = normalize_barcode((data.get("physical_barcode_id") or "").strip())
+    course_code = (data.get("course_code") or "").strip() or None
     if not email or not physical:
         return jsonify({"error": "email and physical_barcode_id required"}), 400
 
@@ -872,11 +902,18 @@ def admin_link_physical():
     if not existing:
         return jsonify({"error": "email not found"}), 404
 
+    if course_code and course_code not in _student_courses(db, email):
+        return jsonify({
+            "error": f"student is not enrolled in course {course_code}",
+        }), 400
+
     absent_before = _compute_attendance_delta(db, email)
     db.execute(
         "UPDATE student SET physical_barcode_id = ? WHERE email = ?",
         (physical, email),
     )
+    if course_code:
+        _write_attendance_today(db, physical, course_code)
     db.commit()
     absent_after = _compute_attendance_delta(db, email)
 
@@ -885,6 +922,72 @@ def admin_link_physical():
         "email": email,
         "physical_barcode_id": physical,
         "rows_updated": len(existing),
+        "attendance_marked": bool(course_code),
+        "attendance_delta": {
+            "absent_before": absent_before,
+            "absent_after": absent_after,
+        },
+    })
+
+
+@app.route("/admin/link-virtual", methods=["POST"])
+def admin_link_virtual():
+    auth_err = require_sync_key()
+    if auth_err:
+        return auth_err
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip().lower()
+    submitted = (data.get("barcode_id") or "").strip()
+    course_code = (data.get("course_code") or "").strip() or None
+    if not email or not submitted:
+        return jsonify({"error": "email and barcode_id required"}), 400
+
+    virtual = normalize_barcode(submitted)
+    if not virtual or virtual == "0":
+        return jsonify({
+            "error": "barcode must contain digits and not be all zeros",
+        }), 400
+
+    db = get_db()
+    existing = db.execute(
+        "SELECT id FROM student WHERE email = ?", (email,)
+    ).fetchall()
+    if not existing:
+        return jsonify({"error": "email not found"}), 404
+
+    courses = _student_courses(db, email)
+    if course_code and course_code not in courses:
+        return jsonify({
+            "error": f"student is not enrolled in course {course_code}",
+        }), 400
+
+    collision = db.execute(
+        f"SELECT email FROM student "
+        f"WHERE barcode_id = ? AND email != ? "
+        f"AND course_code IN ({','.join('?' * len(courses))}) LIMIT 1",
+        [virtual, email] + courses,
+    ).fetchone()
+    if collision:
+        return jsonify({
+            "error": "barcode already claimed by another student in this course",
+        }), 409
+
+    absent_before = _compute_attendance_delta(db, email)
+    db.execute(
+        "UPDATE student SET barcode_id = ? WHERE email = ?",
+        (virtual, email),
+    )
+    if course_code:
+        _write_attendance_today(db, virtual, course_code)
+    db.commit()
+    absent_after = _compute_attendance_delta(db, email)
+
+    return jsonify({
+        "success": True,
+        "email": email,
+        "barcode_id": virtual,
+        "rows_updated": len(existing),
+        "attendance_marked": bool(course_code),
         "attendance_delta": {
             "absent_before": absent_before,
             "absent_after": absent_after,

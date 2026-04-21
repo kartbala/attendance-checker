@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Bulk Enroll -- Physical Barcodes</title>
+<title>Bulk Enroll -- Virtual Barcodes</title>
 <style>
   body { font-family: system-ui, sans-serif; font-size: 20px; max-width: 800px;
          margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
@@ -27,15 +27,15 @@
 </style>
 </head>
 <body>
-<h1>Bulk Enroll -- Physical Barcodes</h1>
+<h1>Bulk Enroll -- Virtual Barcodes</h1>
 <div id="auth-badge" class="auth-no">No admin key in URL. Add <code>?key=YOUR_SYNC_KEY</code>.</div>
 <form id="enroll-form">
   <label for="email">Bison email</label>
   <input type="email" id="email" name="email" autofocus autocomplete="off"
          placeholder="student@bison.howard.edu" required>
-  <label for="barcode">Physical card barcode (scan now)</label>
+  <label for="barcode">Virtual card barcode (scan from phone)</label>
   <input type="text" id="barcode" name="barcode" autocomplete="off"
-         placeholder="(scan)" required>
+         placeholder="(scan from Bison app)" required>
   <button type="submit">Save and next</button>
 </form>
 <div id="log"></div>
@@ -57,9 +57,6 @@
   const barcodeInput = document.getElementById('barcode');
   const log = document.getElementById('log');
 
-  // USB scanners typically end input with \r (Enter), which submits the form.
-  // That's the desired flow once both fields are filled.
-
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!key) {
@@ -71,9 +68,9 @@
     if (!email || !barcode) return;
 
     try {
-      const body = { email: email, physical_barcode_id: barcode };
+      const body = { email: email, barcode_id: barcode };
       if (courseCode) body.course_code = courseCode;
-      const r = await fetch('/admin/link-physical', {
+      const r = await fetch('/admin/link-virtual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Sync-Key': key },
         body: JSON.stringify(body),
@@ -86,7 +83,7 @@
         const delta = d.absent_before - d.absent_after;
         const marked = j.attendance_marked ? ' (marked present today)' : '';
         addEntry('ok',
-          `${email} -- barcode ${barcode} linked${marked}. ` +
+          `${email} -- virtual barcode ${barcode} linked${marked}. ` +
           (delta > 0 ? `+${delta} scans now counted (absences ${d.absent_before} -> ${d.absent_after})`
                      : `no retroactive change`));
         emailInput.value = '';
@@ -104,11 +101,9 @@
     const ts = new Date().toLocaleTimeString();
     div.textContent = `[${ts}] ${msg}`;
     log.insertBefore(div, log.firstChild);
-    // Keep only the last 30
     while (log.children.length > 30) log.removeChild(log.lastChild);
   }
 
-  // After email is typed, Tab/Enter moves focus to barcode.
   emailInput.addEventListener('keydown', (e) => {
     if ((e.key === 'Enter' || e.key === 'Tab') && emailInput.value.trim()) {
       e.preventDefault();

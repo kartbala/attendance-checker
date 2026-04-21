@@ -329,6 +329,269 @@ class AdminLinkPhysicalTest(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 404)
 
+    def test_course_code_triggers_attendance_write(self):
+        """When course_code is passed, write an attendance row for today."""
+        import datetime as dt
+        self._seed_course_with_orphan_scans()
+        today = dt.date.today().isoformat()
+        r = self.client.post(
+            "/admin/link-physical",
+            json={"email": "charrikka@bison.howard.edu",
+                  "physical_barcode_id": "9988776655",
+                  "course_code": "INFO-335-04"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["attendance_marked"])
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT scan_date FROM attendance "
+                "WHERE student_id = ? AND course_code = ? AND scan_date = ?",
+                ("9988776655", "INFO-335-04", today),
+            ).fetchone()
+        self.assertIsNotNone(row)
+
+    def test_no_course_code_no_attendance_write(self):
+        """Without course_code, behavior is link-only (backward-compatible)."""
+        import datetime as dt
+        self._seed_course_with_orphan_scans()
+        today = dt.date.today().isoformat()
+        r = self.client.post(
+            "/admin/link-physical",
+            json={"email": "charrikka@bison.howard.edu",
+                  "physical_barcode_id": "9988776655"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.get_json()["attendance_marked"])
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT scan_date FROM attendance "
+                "WHERE student_id = ? AND scan_date = ?",
+                ("9988776655", today),
+            ).fetchone()
+        self.assertIsNone(row)
+
+    def test_invalid_course_code_returns_400(self):
+        """course_code must match one of the student's enrolled courses."""
+        self._seed_course_with_orphan_scans()
+        r = self.client.post(
+            "/admin/link-physical",
+            json={"email": "charrikka@bison.howard.edu",
+                  "physical_barcode_id": "9988776655",
+                  "course_code": "INFO-999-99"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 400)
+
+
+class AdminLinkVirtualTest(unittest.TestCase):
+    """POST /admin/link-virtual sets barcode_id (virtual) for all student rows
+    with the given email, collision-checks, returns attendance delta. Optional
+    course_code writes an attendance row for today."""
+
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+        self.client = self.app_mod.app.test_client()
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+
+    def _seed_course_with_orphan_virtual_scans(self):
+        """5 registered + 1 target ('anya') with no virtual barcode; 3 orphan
+        scans exist under virtual barcode '5551234567890'."""
+        course = "INFO-335-04"
+        students = [
+            {"email": f"s{i}@bison.howard.edu", "first_name": f"S{i}",
+             "last_name": "T", "course_code": course, "course_name": "POM",
+             "barcode_id": f"22222222222{i:02d}", "physical_barcode_id": None,
+             "huid": f"@1111111{i}"}
+            for i in range(5)
+        ] + [
+            {"email": "anya@bison.howard.edu", "first_name": "Anya",
+             "last_name": "Test", "course_code": course, "course_name": "POM",
+             "barcode_id": None, "physical_barcode_id": None,
+             "huid": "@03108888"},
+        ]
+        attendance = []
+        for d in ("2026-02-03", "2026-02-05", "2026-02-10"):
+            for i in range(5):
+                attendance.append({
+                    "student_id": f"22222222222{i:02d}", "course_code": course,
+                    "scan_date": d, "scan_timestamp": f"{d}T19:11:32Z",
+                })
+            attendance.append({
+                "student_id": "5551234567890", "course_code": course,
+                "scan_date": d, "scan_timestamp": f"{d}T19:15:00Z",
+            })
+        self.client.post("/sync/push", json={
+            "students": students, "attendance": attendance,
+        }, headers={"X-Sync-Key": "testkey"})
+
+    def test_links_virtual_barcode_and_returns_delta(self):
+        self._seed_course_with_orphan_virtual_scans()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"email": "anya@bison.howard.edu",
+                  "barcode_id": "5551234567890"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["email"], "anya@bison.howard.edu")
+        self.assertEqual(body["barcode_id"], "5551234567890")
+        self.assertEqual(body["attendance_delta"]["absent_before"], 3)
+        self.assertEqual(body["attendance_delta"]["absent_after"], 0)
+        self.assertFalse(body["attendance_marked"])
+
+        r = self.client.get(
+            "/attendance",
+            query_string={"email": "anya@bison.howard.edu"},
+        )
+        self.assertEqual(r.get_json()["sessions_attended"], 3)
+
+    def test_rejects_missing_auth(self):
+        self._seed_course_with_orphan_virtual_scans()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"email": "anya@bison.howard.edu",
+                  "barcode_id": "5551234567890"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_rejects_bad_auth(self):
+        self._seed_course_with_orphan_virtual_scans()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"email": "anya@bison.howard.edu",
+                  "barcode_id": "5551234567890"},
+            headers={"X-Sync-Key": "wrong"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_rejects_missing_email(self):
+        self._seed_course_with_orphan_virtual_scans()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"barcode_id": "5551234567890"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_rejects_missing_barcode(self):
+        self._seed_course_with_orphan_virtual_scans()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"email": "anya@bison.howard.edu"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_404_on_unknown_email(self):
+        self._seed_course_with_orphan_virtual_scans()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"email": "nobody@bison.howard.edu",
+                  "barcode_id": "5551234567890"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_rejects_collision_in_same_course(self):
+        self._seed_course_with_orphan_virtual_scans()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"email": "anya@bison.howard.edu",
+                  "barcode_id": "2222222222200"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("already claimed", r.get_json()["error"])
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT barcode_id FROM student WHERE email = ?",
+                ("anya@bison.howard.edu",),
+            ).fetchone()
+        self.assertIsNone(row["barcode_id"])
+
+    def test_normalizes_leading_zeros(self):
+        self._seed_course_with_orphan_virtual_scans()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"email": "anya@bison.howard.edu",
+                  "barcode_id": "00005551234567890"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertEqual(body["barcode_id"], "5551234567890")
+        self.assertEqual(body["attendance_delta"]["absent_after"], 0)
+
+    def test_course_code_writes_attendance(self):
+        import datetime as dt
+        self._seed_course_with_orphan_virtual_scans()
+        today = dt.date.today().isoformat()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"email": "anya@bison.howard.edu",
+                  "barcode_id": "5551234567890",
+                  "course_code": "INFO-335-04"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["attendance_marked"])
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT scan_date FROM attendance "
+                "WHERE student_id = ? AND course_code = ? AND scan_date = ?",
+                ("5551234567890", "INFO-335-04", today),
+            ).fetchone()
+        self.assertIsNotNone(row)
+
+    def test_invalid_course_code_returns_400(self):
+        self._seed_course_with_orphan_virtual_scans()
+        r = self.client.post(
+            "/admin/link-virtual",
+            json={"email": "anya@bison.howard.edu",
+                  "barcode_id": "5551234567890",
+                  "course_code": "INFO-999-99"},
+            headers={"X-Sync-Key": "testkey"},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_duplicate_attendance_tolerated(self):
+        """Calling twice with the same course_code does NOT 500 on UNIQUE
+        constraint. INSERT OR IGNORE dedupes server-side."""
+        import datetime as dt
+        self._seed_course_with_orphan_virtual_scans()
+        today = dt.date.today().isoformat()
+        for _ in range(2):
+            r = self.client.post(
+                "/admin/link-virtual",
+                json={"email": "anya@bison.howard.edu",
+                      "barcode_id": "5551234567890",
+                      "course_code": "INFO-335-04"},
+                headers={"X-Sync-Key": "testkey"},
+            )
+            self.assertEqual(r.status_code, 200)
+        # Exactly one attendance row for today, not two.
+        with sqlite3.connect(self.db_path) as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM attendance "
+                "WHERE student_id = ? AND course_code = ? AND scan_date = ?",
+                ("5551234567890", "INFO-335-04", today),
+            ).fetchone()[0]
+        self.assertEqual(n, 1)
+
 
 class EnrollRouteTest(unittest.TestCase):
     def setUp(self):
@@ -350,6 +613,14 @@ class EnrollRouteTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"<h1>Bulk Enroll", r.data)
         self.assertIn(b"enroll-form", r.data)
+        r.close()
+
+    def test_enroll_virtual_serves_static_html(self):
+        r = self.client.get("/enroll-virtual")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"Virtual Barcodes", r.data)
+        self.assertIn(b"/admin/link-virtual", r.data)
+        self.assertIn(b"scan from phone", r.data)
         r.close()
 
 
