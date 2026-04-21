@@ -846,10 +846,28 @@ class RosterTest(unittest.TestCase):
     def test_status_strings_present(self):
         r = self.client.get("/admin/roster", query_string={"key": "testkey"})
         body = r.data
-        self.assertIn(b"physical", body)
-        self.assertIn(b"skipped: privacy-screen", body)
-        self.assertIn(b"virtual only", body)
-        self.assertIn(b"unregistered", body)
+        # Anchor assertions to the status *cell* so we verify classification,
+        # not just that the word appears somewhere (e.g. in CSS/headers).
+        self.assertIn(b"class='status-physical'>physical</td>", body)
+        self.assertIn(b"class='status-skipped'>skipped: privacy-screen</td>", body)
+        self.assertIn(b"class='status-virtual'>virtual only</td>", body)
+        self.assertIn(b"class='status-unreg'>unregistered</td>", body)
+
+    def test_skip_reason_is_html_escaped(self):
+        # Inject a skip reason that would XSS if unescaped
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO student (email, first_name, last_name, course_code, course_name, "
+                "barcode_id, physical_barcode_id, physical_barcode_skip_reason, huid) "
+                "VALUES (?, 'X', 'Ss', 'INFO-335-04', 'POM', '900999', NULL, ?, '@99999999')",
+                ("xss@bison.howard.edu", "<script>alert(1)</script>"),
+            )
+            conn.commit()
+        r = self.client.get("/admin/roster?key=testkey")
+        self.assertEqual(r.status_code, 200)
+        body = r.data
+        self.assertNotIn(b"<script>alert(1)</script>", body)
+        self.assertIn(b"&lt;script&gt;alert(1)&lt;/script&gt;", body)
 
     def test_summary_counts(self):
         r = self.client.get("/admin/roster", query_string={"key": "testkey"})

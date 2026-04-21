@@ -1,5 +1,6 @@
 """Student Attendance Checker API."""
 
+import html
 import json
 import os
 import re
@@ -684,21 +685,24 @@ def admin_roster():
         phys = r["physical_barcode_id"]
         skip = r["physical_barcode_skip_reason"]
         virt = r["barcode_id"]
+        # skip_reason is student-supplied free text (via /register "other"
+        # option), so it must be HTML-escaped anywhere it's rendered.
+        skip_safe = html.escape(skip) if skip else None
         if phys:
             status = "physical"
-            status_cls = "s-physical"
+            status_cls = "status-physical"
             n_physical += 1
         elif skip:
-            status = f"skipped: {skip}"
-            status_cls = "s-skipped"
+            status = f"skipped: {skip_safe}"
+            status_cls = "status-skipped"
             n_skipped += 1
         elif virt:
             status = "virtual only"
-            status_cls = "s-virtual"
+            status_cls = "status-virtual"
             n_virtual += 1
         else:
             status = "unregistered"
-            status_cls = "s-unreg"
+            status_cls = "status-unreg"
             n_unreg += 1
 
         name = f"{r['last_name']}, {r['first_name']}"
@@ -710,13 +714,13 @@ def admin_roster():
             f"<td>{r['huid'] or '--'}</td>"
             f"<td>{virt or '--'}</td>"
             f"<td>{phys or '--'}</td>"
-            f"<td>{skip or '--'}</td>"
+            f"<td>{skip_safe or '--'}</td>"
             f"<td class='{status_cls}'>{status}</td>"
             f"</tr>"
         )
 
     total = len(rows)
-    html = [
+    page = [
         "<!doctype html><html><head><meta charset='utf-8'><title>Student Roster</title>",
         "<style>",
         "body{font-family:system-ui;font-size:15px;max-width:1500px;margin:1rem auto;padding:0 1rem}",
@@ -725,10 +729,10 @@ def admin_roster():
         "font-family:monospace;font-size:13px}",
         "th{background:#f3f3f3}",
         ".summary{margin:1rem 0;font-size:15px}",
-        ".s-physical{color:#0a7a0a;font-weight:600}",
-        ".s-skipped{color:#b36b00;font-weight:600}",
-        ".s-virtual{color:#555}",
-        ".s-unreg{color:#b00020;font-weight:600}",
+        ".status-physical{color:#0a7a0a;font-weight:600}",
+        ".status-skipped{color:#b36b00;font-weight:600}",
+        ".status-virtual{color:#555}",
+        ".status-unreg{color:#b00020;font-weight:600}",
         "</style></head><body>",
         "<h1>Student Roster</h1>",
         f"<div class='summary'>Total enrolled: {total} &nbsp;|&nbsp; "
@@ -741,9 +745,9 @@ def admin_roster():
         "<th>Virtual barcode</th><th>Physical barcode</th><th>Skip reason</th><th>Status</th>",
         "</tr></thead><tbody>",
     ]
-    html.extend(table_rows)
-    html.append("</tbody></table></body></html>")
-    return "".join(html)
+    page.extend(table_rows)
+    page.append("</tbody></table></body></html>")
+    return "".join(page)
 
 
 @app.route("/enroll")
