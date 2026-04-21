@@ -684,6 +684,52 @@ class SkipReasonColumnTest(unittest.TestCase):
             except FileNotFoundError: pass
 
 
+class SyncPullSkipReasonTest(unittest.TestCase):
+    def setUp(self):
+        fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.app_mod = _fresh_app(self.db_path)
+        self.client = self.app_mod.app.test_client()
+        # Seed directly: sync/push silently drops physical_barcode_skip_reason,
+        # so we insert rows directly into the DB after init_db() has run.
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO student (email, first_name, last_name, course_code, course_name, "
+                "barcode_id, physical_barcode_id, physical_barcode_skip_reason, huid) VALUES "
+                "('skipper@bison.howard.edu','S','Kip','INFO-335-04','POM',"
+                "'100001',NULL,'privacy-screen','@00000001')"
+            )
+            conn.execute(
+                "INSERT INTO student (email, first_name, last_name, course_code, course_name, "
+                "barcode_id, physical_barcode_id, physical_barcode_skip_reason, huid) VALUES "
+                "('physical@bison.howard.edu','P','Hys','INFO-335-04','POM',"
+                "'100002','200002',NULL,'@00000002')"
+            )
+            conn.commit()
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+
+    def test_sync_pull_includes_skip_reason(self):
+        r = self.client.get("/sync/pull", headers={"X-Sync-Key": "testkey"})
+        self.assertEqual(r.status_code, 200)
+        by_email = {x["email"]: x for x in r.get_json()["registrations"]}
+        self.assertIn("skipper@bison.howard.edu", by_email)
+        self.assertIn("physical@bison.howard.edu", by_email)
+        self.assertEqual(
+            by_email["skipper@bison.howard.edu"]["physical_barcode_skip_reason"],
+            "privacy-screen",
+        )
+        self.assertIsNone(
+            by_email["physical@bison.howard.edu"]["physical_barcode_skip_reason"]
+        )
+
+
 class RegisterWithSkipReasonTest(unittest.TestCase):
     def setUp(self):
         fd, self.db_path = tempfile.mkstemp(suffix=".db")

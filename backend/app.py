@@ -727,12 +727,19 @@ def sync_pull():
 
     db = get_db()
     rows = db.execute(
-        "SELECT email, barcode_id, physical_barcode_id, huid FROM student WHERE barcode_id IS NOT NULL AND barcode_id != ''"
+        "SELECT email, barcode_id, physical_barcode_id, physical_barcode_skip_reason, huid "
+        "FROM student WHERE barcode_id IS NOT NULL AND barcode_id != ''"
     ).fetchall()
 
     return jsonify({
         "registrations": [
-            {"email": r["email"], "barcode_id": r["barcode_id"], "physical_barcode_id": r["physical_barcode_id"], "huid": r["huid"]}
+            {
+                "email": r["email"],
+                "barcode_id": r["barcode_id"],
+                "physical_barcode_id": r["physical_barcode_id"],
+                "physical_barcode_skip_reason": r["physical_barcode_skip_reason"],
+                "huid": r["huid"],
+            }
             for r in rows
         ]
     })
