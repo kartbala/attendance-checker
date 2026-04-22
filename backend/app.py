@@ -531,8 +531,14 @@ def dashboard(course_code):
     for r in session_rows:
         d = r["scan_date"]
         scan_count = r["scan_count"]
-        excused = excused_by_date.get(d, 0)
         present = min(scan_count, enrolled)
+        # Excused can exceed (enrolled - present) when an instructor-waiver
+        # was applied to the whole roster -- the excused_absence table
+        # includes drops and cross-enrolled students, so raw counts can go
+        # above enrolled. Cap so the stacked-bar math stays consistent
+        # with the enrolled denominator.
+        raw_excused = excused_by_date.get(d, 0)
+        excused = max(0, min(raw_excused, enrolled - present))
         absent = max(0, enrolled - present - excused)
         sessions.append({
             "date": d,
