@@ -1,15 +1,28 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { RegisterForm } from './components/RegisterForm';
 import { AttendanceView } from './components/AttendanceView';
+import { Dashboard } from './components/Dashboard';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
-type Screen = 'register' | 'attendance';
+type Screen = 'register' | 'attendance' | 'dashboard';
+
+function readHashScreen(): Screen {
+  return window.location.hash === '#dashboard' ? 'dashboard' : 'register';
+}
 
 function App() {
-  const [screen, setScreen] = useState<Screen>('register');
+  const [screen, setScreen] = useState<Screen>(readHashScreen());
   const [email, setEmail] = useState('');
   const [courseCode, setCourseCode] = useState<string | undefined>();
+
+  useEffect(() => {
+    const onHash = () => setScreen(readHashScreen());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  const goRegister = () => { window.location.hash = ''; setScreen('register'); };
 
   const handleRegistered = (registeredEmail: string) => {
     setEmail(registeredEmail);
@@ -25,7 +38,7 @@ function App() {
 
   const handleBack = () => {
     setCourseCode(undefined);
-    setScreen('register');
+    goRegister();
   };
 
   return (
@@ -45,6 +58,9 @@ function App() {
           apiUrl={API_URL}
           onBack={handleBack}
         />
+      )}
+      {screen === 'dashboard' && (
+        <Dashboard apiUrl={API_URL} onBack={goRegister} />
       )}
     </div>
   );

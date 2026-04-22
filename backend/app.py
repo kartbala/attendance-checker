@@ -29,11 +29,42 @@ def format_scan_time_et(ts: str) -> str:
     except ValueError:
         return ts
 
+def _scan_ts_to_et_minutes(ts):
+    """Convert a scan_timestamp ('2026-02-03T19:11:32Z') to wall-clock ET
+    minutes-past-midnight (float). Returns None on parse failure.
+    Same convention as format_scan_time_et -- subtract 5h to get ET wall."""
+    if not ts:
+        return None
+    s = ts.replace("Z", "+00:00").replace(".000+00:00", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s).replace(tzinfo=None) - timedelta(hours=5)
+    except ValueError:
+        return None
+    return dt.hour * 60 + dt.minute + dt.second / 60.0
+
+
 app = Flask(__name__)
 CORS(app)
 
 DB_PATH = Path(os.environ.get("DB_PATH", Path(__file__).parent / "data" / "checker.db"))
 SYNC_API_KEY = os.environ.get("SYNC_API_KEY", "dev-key")
+
+# Per-course metadata for the aggregate dashboard. Keep in sync with the
+# frontend ENROLLED_OVERRIDE / CLASS_START_MINUTES constants in
+# AttendanceView.tsx (source: memory project_attendance_checker.md).
+COURSE_META = {
+    "INFO-335-04": {"name": "POM", "enrolled": 39, "class_start_minutes": 12 * 60 + 40},
+    "INFO-311-05": {"name": "QBA", "enrolled": 40, "class_start_minutes": 14 * 60 + 10},
+}
+
+# Dates to drop from aggregate charts and the individual arrival-times
+# plot. These are bulk-enrollment class days -- scans were triggered by
+# the virtual-barcode registration flow, not by arrival, so the timing
+# signal is meaningless.
+BULK_ENROLL_DATES = {
+    "INFO-335-04": {"2026-04-21"},
+    "INFO-311-05": {"2026-04-21"},
+}
 
 
 def normalize_barcode(barcode):
@@ -460,6 +491,159 @@ def attendance():
         "dates": dates,
         "section_orphan_count": section_orphan_count,
         "has_physical_barcode": has_physical_barcode,
+    })
+
+
+@app.route("/dashboard/<course_code>")
+def dashboard(course_code):
+    course_code = course_code.upper()
+    meta = COURSE_META.get(course_code)
+    if not meta:
+        return jsonify({"error": f"unknown course {course_code}",
+                        "known": sorted(COURSE_META.keys())}), 404
+
+    db = get_db()
+    excl = BULK_ENROLL_DATES.get(course_code, set())
+    enrolled = meta["enrolled"]
+    class_start = meta["class_start_minutes"]
+
+    session_rows = db.execute(
+        "SELECT scan_date, "
+        "COUNT(DISTINCT student_id) AS scan_count, "
+        "MIN(scan_timestamp) AS first_ts, "
+        "MAX(scan_timestamp) AS last_ts "
+        "FROM attendance WHERE course_code = ? "
+        "GROUP BY scan_date HAVING scan_count >= 5 "
+        "ORDER BY scan_date",
+        (course_code,),
+    ).fetchall()
+    session_rows = [r for r in session_rows if r["scan_date"] not in excl]
+    session_dates = [r["scan_date"] for r in session_rows]
+
+    excused_rows = db.execute(
+        "SELECT absence_date, COUNT(*) AS cnt FROM excused_absence "
+        "WHERE course_code = ? GROUP BY absence_date",
+        (course_code,),
+    ).fetchall()
+    excused_by_date = {r["absence_date"]: r["cnt"] for r in excused_rows}
+
+    sessions = []
+    for r in session_rows:
+        d = r["scan_date"]
+        scan_count = r["scan_count"]
+        excused = excused_by_date.get(d, 0)
+        present = min(scan_count, enrolled)
+        absent = max(0, enrolled - present - excused)
+        sessions.append({
+            "date": d,
+            "scan_count": scan_count,
+            "present": present,
+            "excused": excused,
+            "absent": absent,
+            "first_scan_time": format_scan_time_et(r["first_ts"]) if r["first_ts"] else None,
+            "last_scan_time": format_scan_time_et(r["last_ts"]) if r["last_ts"] else None,
+            "first_scan_minutes": _scan_ts_to_et_minutes(r["first_ts"]),
+            "last_scan_minutes": _scan_ts_to_et_minutes(r["last_ts"]),
+        })
+
+    # Lateness histogram: per-(student, date) first-scan minutes vs class start,
+    # bucketed 2 minutes wide, clamped [-20, +30]. Weight = one scan event.
+    import collections
+    hist = collections.Counter()
+    if session_dates:
+        placeholders = ",".join("?" * len(session_dates))
+        per_student = db.execute(
+            f"SELECT scan_date, student_id, MIN(scan_timestamp) AS first_ts "
+            f"FROM attendance WHERE course_code = ? AND scan_date IN ({placeholders}) "
+            f"GROUP BY scan_date, student_id",
+            (course_code, *session_dates),
+        ).fetchall()
+        for r in per_student:
+            m = _scan_ts_to_et_minutes(r["first_ts"])
+            if m is None:
+                continue
+            delta = m - class_start
+            delta = max(-20.0, min(30.0, delta))
+            bucket = int(delta // 2) * 2
+            hist[bucket] += 1
+    buckets = sorted(hist.keys())
+    lateness_histogram = [{"bucket_min": b, "count": hist[b]} for b in buckets]
+
+    total_sessions = len(sessions)
+    total_present = sum(s["present"] for s in sessions)
+    total_excused = sum(s["excused"] for s in sessions)
+    total_absent = sum(s["absent"] for s in sessions)
+    denom = total_present + total_excused + total_absent
+    overall_rate = (total_present + total_excused) / denom if denom else 0.0
+
+    # Per-student attendance-rate distribution. Iterates over registered
+    # students in this course -- i.e. students with at least one barcode
+    # on file -- and buckets their effective rate. Unregistered students
+    # are counted separately so the caller can show the registration gap.
+    session_dates_set = set(session_dates)
+    roster = db.execute(
+        "SELECT email, barcode_id, physical_barcode_id FROM student WHERE course_code = ?",
+        (course_code,),
+    ).fetchall()
+    all_excused = db.execute(
+        "SELECT student_email, absence_date FROM excused_absence WHERE course_code = ?",
+        (course_code,),
+    ).fetchall()
+    excused_by_email = {}
+    for r in all_excused:
+        excused_by_email.setdefault(r["student_email"], set()).add(r["absence_date"])
+
+    per_student_rates = []
+    unregistered = 0
+    for r in roster:
+        barcodes = [normalize_barcode(b) for b in (r["barcode_id"], r["physical_barcode_id"]) if b]
+        if not barcodes:
+            unregistered += 1
+            continue
+        placeholders = ",".join("?" * len(barcodes))
+        attended_rows = db.execute(
+            f"SELECT DISTINCT scan_date FROM attendance "
+            f"WHERE student_id IN ({placeholders}) AND course_code = ?",
+            barcodes + [course_code],
+        ).fetchall()
+        credited = ({a["scan_date"] for a in attended_rows} & session_dates_set) | \
+                   (excused_by_email.get(r["email"], set()) & session_dates_set)
+        rate = len(credited) / total_sessions if total_sessions else 0.0
+        per_student_rates.append(rate)
+
+    # Buckets. Left-inclusive, right-exclusive; top bucket catches 100%.
+    bucket_defs = [
+        (0.90, 1.01, "90-100%"),
+        (0.80, 0.90, "80-90%"),
+        (0.70, 0.80, "70-80%"),
+        (0.60, 0.70, "60-70%"),
+        (0.0,  0.60, "<60%"),
+    ]
+    bucket_counts = [0] * len(bucket_defs)
+    for r in per_student_rates:
+        for i, (lo, hi, _) in enumerate(bucket_defs):
+            if lo <= r < hi:
+                bucket_counts[i] += 1
+                break
+
+    attendance_distribution = [
+        {"label": bd[2], "low": bd[0], "high": bd[1], "count": bucket_counts[i]}
+        for i, bd in enumerate(bucket_defs)
+    ]
+
+    return jsonify({
+        "course_code": course_code,
+        "course_name": meta["name"],
+        "enrolled": enrolled,
+        "class_start_minutes": class_start,
+        "total_sessions": total_sessions,
+        "overall_attendance_rate": round(overall_rate, 4),
+        "excluded_dates": sorted(excl),
+        "sessions": sessions,
+        "lateness_histogram": lateness_histogram,
+        "attendance_distribution": attendance_distribution,
+        "registered_students": len(per_student_rates),
+        "unregistered_students": unregistered,
     })
 
 
@@ -1089,4 +1273,4 @@ def claim_physical_barcode():
 init_db()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5001")), debug=True)

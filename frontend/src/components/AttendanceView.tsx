@@ -59,6 +59,15 @@ const CLASS_START_MINUTES: Record<string, number> = {
   'INFO-311-05': 14 * 60 + 10, // QBA: 2:10 PM
 };
 
+// Dates where scans were triggered by the virtual-barcode registration
+// flow, not by arrival. Excluded from the individual arrival-times chart
+// because the timing signal is meaningless. Keep in sync with backend
+// BULK_ENROLL_DATES in app.py.
+const BULK_ENROLL_DATES: Record<string, Set<string>> = {
+  'INFO-335-04': new Set(['2026-04-21']),
+  'INFO-311-05': new Set(['2026-04-21']),
+};
+
 function fmtDate(iso: string) {
   return new Date(iso + 'T12:00:00').toLocaleDateString('en-US', {
     weekday: 'short', month: 'short', day: 'numeric',
@@ -104,8 +113,9 @@ function SessionTimeline({ dates }: { dates: DateEntry[] }) {
   );
 }
 
-function ArrivalTimesChart({ dates, classStart }: { dates: DateEntry[]; classStart?: number }) {
-  const presentDates = dates.filter((d) => d.first_scan_time);
+function ArrivalTimesChart({ dates, classStart, courseCode }: { dates: DateEntry[]; classStart?: number; courseCode?: string }) {
+  const excluded = courseCode ? BULK_ENROLL_DATES[courseCode] : undefined;
+  const presentDates = dates.filter((d) => d.first_scan_time && !(excluded && excluded.has(d.date)));
   if (presentDates.length < 2) return null;
 
   const times = presentDates.map((d) => {
@@ -378,7 +388,7 @@ export function AttendanceView({ email, courseCode, onCourseSelect, apiUrl, onBa
         <div className="bg-white rounded-2xl shadow-lg p-6">
           <h3 className="text-lg font-semibold text-gray-800">Your arrival times</h3>
           <p className="text-sm text-gray-500 mb-3">First scan timestamp per session you attended. Red dashed line = class start.</p>
-          <ArrivalTimesChart dates={data.dates} classStart={classStart} />
+          <ArrivalTimesChart dates={data.dates} classStart={classStart} courseCode={data.course_code} />
         </div>
       )}
 
